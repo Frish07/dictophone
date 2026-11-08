@@ -14,6 +14,8 @@ target_include_directories(Dictophone PRIVATE src)
 if(MSVC)
   target_compile_options(dictophone_audio PRIVATE /W4 /utf-8)
   target_compile_options(Dictophone PRIVATE /W4 /utf-8)
+  # app.rc already embeds our DPI/compatibility manifest as resource 1.
+  target_link_options(Dictophone PRIVATE /MANIFEST:NO)
   set_property(TARGET dictophone_audio Dictophone PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
   target_link_options(Dictophone PRIVATE -mwindows -municode -static)
