@@ -104,6 +104,11 @@ void Recorder::finish() {
     if (thread_.joinable()) thread_.join();
     recording_ = false; peak_ = 0;
 }
+void Recorder::reset() {
+    finish();
+    frames_ = 0;
+    EnterCriticalSection(&errorLock_); error_.clear(); LeaveCriticalSection(&errorLock_);
+}
 void Recorder::run(std::filesystem::path path, HWND notify, void* startupPtr) {
     auto* startup = static_cast<Startup*>(startupPtr);
     const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -198,6 +203,21 @@ std::filesystem::path findFfmpeg() {
     if (std::filesystem::exists(nextToApp)) return nextToApp;
     // Use an explicit colocated encoder; an unrelated PATH executable may be incompatible.
     return {};
+}
+bool discardAudio(Recorder& recorder, const std::filesystem::path& draft, std::wstring& error) {
+    recorder.finish();
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(draft, ec);
+    if (ec || (exists && !std::filesystem::is_regular_file(draft, ec))) {
+        error = L"Не удалось удалить временную запись. Можно повторить удаление или сохранить аудио.";
+        return false;
+    }
+    if (exists) std::filesystem::remove(draft, ec);
+    if (ec) {
+        error = L"Не удалось удалить временную запись. Можно повторить удаление или сохранить аудио.";
+        return false;
+    }
+    recorder.reset(); error.clear(); return true;
 }
 bool exportAudio(const std::filesystem::path& source, const std::filesystem::path& destination,
     const std::wstring& extension, const std::filesystem::path& ffmpeg, std::wstring& error) {

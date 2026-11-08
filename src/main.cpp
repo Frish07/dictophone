@@ -24,7 +24,7 @@ const std::array<std::wstring, 5> Formats{L"wav", L"mp3", L"ogg", L"flac", L"m4a
 HWND window = nullptr;
 HHOOK keyboardHook = nullptr;
 bool walkie = false, globalSpace = false, pinned = false, compact = false, session = false,
-    exporting = false, held = false, modal = false, closeAfterSave = false, finalized = false;
+    exporting = false, held = false, mouseHolding = false, modal = false, closeAfterSave = false, finalized = false;
 int formatIndex = 0;
 float scale = 1.f;
 Recorder recorder;
@@ -41,6 +41,7 @@ void layoutControls();
 void resizeWindow(int x, int y);
 
 int px(int value) { return int(value * scale + .5f); }
+bool canDiscard() { return session && !exporting && !recorder.isRecording(); }
 fs::path knownFolder(REFKNOWNFOLDERID id) {
     PWSTR value = nullptr;
     if (FAILED(SHGetKnownFolderPath(id, 0, nullptr, &value))) return fs::current_path();
@@ -89,11 +90,17 @@ void update() {
         HWND button = GetDlgItem(window, id);
         if (bool(IsWindowEnabled(button)) != value) EnableWindow(button, value);
     };
-    label(Main, walkie ? L"Удерживать" : session ? L"Стоп" : L"Запись");
+    label(Main, canDiscard() ? L"Удалить" : walkie ? L"Удерживать" : session ? L"Стоп" : L"Запись");
     label(Pause, recorder.isRecording() ? L"Пауза" : L"Продолжить");
-    enabled(Main, !exporting && !(walkie && finalized));
+    enabled(Main, !exporting && (!(walkie && finalized) || canDiscard()));
     enabled(Pause, !walkie && session && !exporting && !finalized);
     enabled(Save, session && !exporting);
+    TOOLINFOW mainTip{}; mainTip.cbSize = sizeof(mainTip); mainTip.uFlags = TTF_IDISHWND;
+    mainTip.hwnd = window; mainTip.uId = reinterpret_cast<UINT_PTR>(GetDlgItem(window, Main));
+    mainTip.lpszText = const_cast<wchar_t*>(canDiscard() ? L"Удалить текущую запись (с подтверждением)" :
+        walkie ? L"Удерживать для записи. Продолжить запись на паузе — удерживать пробел." :
+        session ? L"Остановить и сохранить запись" : L"Начать запись");
+    SendMessageW(tooltips, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&mainTip));
     HWND focused = GetFocus();
     if (GetActiveWindow() == window && (!focused || !IsWindowEnabled(focused) || !IsWindowVisible(focused)))
         SetFocus(IsWindowEnabled(GetDlgItem(window, Main)) ? GetDlgItem(window, Main) : window);
@@ -124,6 +131,24 @@ void releaseSpace() {
     if (!held) return;
     held = false;
     if (walkie && session && !exporting) { recorder.setRecording(false); notice.clear(); update(); }
+}
+void discardRecording() {
+    if (!canDiscard() || modal) return;
+    modal = true;
+    const int answer = MessageBoxW(window,
+        L"Удалить текущую несохранённую запись?\n\nДа — удалить запись и сбросить таймер.\nНет — оставить запись на паузе.",
+        L"Удалить запись?", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+    modal = false;
+    if (answer != IDYES) { update(); return; }
+    finalized = true;
+    std::wstring error;
+    if (!discardAudio(recorder, draft, error)) {
+        notice = L"Не удалось удалить · запись сохранена в черновике";
+        update(); errorBox(error); return;
+    }
+    session = false; finalized = false; held = false; mouseHolding = false;
+    closeAfterSave = false; draft.clear(); levels.assign(49, .02f);
+    notice = L"Запись удалена"; update();
 }
 void toggleCompact() {
     releaseSpace(); compact = !compact;
@@ -250,7 +275,7 @@ void menu(const POINT* anchor = nullptr) {
     if (selected == Pin) SendMessageW(window, WM_COMMAND, Pin, 0);
     if (selected == 207) {
         modal = true;
-        MessageBoxW(window, L"Dictophone 1.1.0\n\nДиктофон: запись → пауза → стоп.\nРация: держите пробел, чтобы записывать.\nКнопка «Сохранить» завершает запись.\n\nCtrl+S — сохранить. Ctrl+O — папка записей.\nCtrl+M — уменьшенное окно.\nВ уменьшенном окне: ПКМ — меню, таймер — перетащить.\nДвойной щелчок по таймеру — обычное окно.\nНастройки и черновики: %LOCALAPPDATA%\\Dictophone\n\nГлобальный пробел включается отдельно в меню.\nВ этом режиме он перехватывается в других приложениях.",
+        MessageBoxW(window, L"Dictophone 1.2.0\n\nДиктофон: запись → пауза → продолжить / сохранить.\nНа паузе главная кнопка удаляет запись после подтверждения.\nРация: держите пробел, чтобы записывать.\nКнопка «Сохранить» завершает запись.\n\nCtrl+S — сохранить. Ctrl+O — папка записей.\nCtrl+M — уменьшенное окно.\nВ уменьшенном окне: ПКМ — меню, таймер — перетащить.\nДвойной щелчок по таймеру — обычное окно.\nНастройки и черновики: %LOCALAPPDATA%\\Dictophone\n\nГлобальный пробел включается отдельно в меню.\nВ этом режиме он перехватывается в других приложениях.",
             L"О приложении", MB_OK | MB_ICONINFORMATION); modal = false;
     }
     saveSettings(); update();
@@ -299,7 +324,15 @@ void drawCompactIcon(HDC dc, int id, RECT r, COLORREF color, COLORREF background
     const int cx = (r.left+r.right)/2, cy = (r.top+r.bottom)/2, unit = px(9);
     auto brush = CreateSolidBrush(color); auto oldBrush = SelectObject(dc, brush);
     auto oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
-    if (id == Main && walkie) Ellipse(dc, cx-unit, cy-unit, cx+unit, cy+unit);
+    if (id == Main && canDiscard()) {
+        RoundRect(dc, cx-px(7), cy-px(5), cx+px(7), cy+px(10), px(3), px(3));
+        Rectangle(dc, cx-px(9), cy-px(9), cx+px(9), cy-px(6));
+        Rectangle(dc, cx-px(3), cy-px(12), cx+px(3), cy-px(9));
+        auto cutout = CreateSolidBrush(background);
+        RECT left{cx-px(3),cy-px(2),cx-px(1),cy+px(7)}; FillRect(dc, &left, cutout);
+        RECT right{cx+px(1),cy-px(2),cx+px(3),cy+px(7)}; FillRect(dc, &right, cutout);
+        DeleteObject(cutout);
+    } else if (id == Main && walkie) Ellipse(dc, cx-unit, cy-unit, cx+unit, cy+unit);
     else if (id == Main && session) Rectangle(dc, cx-unit, cy-unit, cx+unit, cy+unit);
     else if (id == Pause && recorder.isRecording()) {
         Rectangle(dc, cx-unit, cy-unit, cx-px(3), cy+unit);
@@ -326,7 +359,7 @@ void drawButton(const DRAWITEMSTRUCT* item) {
     const bool disabled = (item->itemState & ODS_DISABLED) != 0;
     const bool down = (item->itemState & ODS_SELECTED) != 0;
     int id = int(item->CtlID);
-    COLORREF fill = id == Main ? (session && !walkie ? Red : Accent) : Panel;
+    COLORREF fill = id == Main ? (canDiscard() || (session && !walkie) ? Red : Accent) : Panel;
     if (id == Pin && pinned) fill = RGB(44, 79, 77);
     if (id <= Close) fill = id == Pin && pinned ? RGB(44, 79, 77) : Bg;
     if (down) fill = RGB(GetRValue(fill)*3/4, GetGValue(fill)*3/4, GetBValue(fill)*3/4);
@@ -337,7 +370,7 @@ void drawButton(const DRAWITEMSTRUCT* item) {
     if (id == Menu) label = L"⋯";
     if (id == Minimize) label = L"−";
     if (id == Close) label = L"×";
-    if (id == Main) label = walkie ? L"● Держать" : session ? L"■ Стоп" : L"▶ Запись";
+    if (id == Main) label = canDiscard() ? L"Удалить" : walkie ? L"● Держать" : session ? L"■ Стоп" : L"▶ Запись";
     if (id == Pause) label = recorder.isRecording() ? L"Ⅱ" : L"▶";
     if (id == Save) label = L"Сохранить";
     if (compact && (id == Main || id == Pause || id == Save))
@@ -358,11 +391,13 @@ void addButton(int id, const wchar_t* label, int x, int y, int w, int h, const w
 LRESULT CALLBACK buttonProc(HWND button, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
     if (message == WM_ERASEBKGND) return 1;
     const bool main = GetDlgCtrlID(button) == Main;
-    if (main && walkie && message == WM_LBUTTONDOWN && !exporting) {
-        SetFocus(button); SetCapture(button); pressSpace(); return 0;
+    if (main && walkie && message == WM_LBUTTONDOWN && !exporting && !canDiscard()) {
+        mouseHolding = true; SetFocus(button); SetCapture(button); pressSpace(); return 0;
     }
-    if (main && walkie && message == WM_LBUTTONUP) { releaseSpace(); ReleaseCapture(); return 0; }
-    if (main && walkie && (message == WM_CAPTURECHANGED || message == WM_CANCELMODE)) releaseSpace();
+    if (main && mouseHolding && message == WM_LBUTTONUP) { mouseHolding = false; releaseSpace(); ReleaseCapture(); return 0; }
+    if (main && mouseHolding && (message == WM_CAPTURECHANGED || message == WM_CANCELMODE)) {
+        mouseHolding = false; releaseSpace();
+    }
     return DefSubclassProc(button, message, wp, lp);
 }
 void layoutControls() {
@@ -468,6 +503,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     case SpaceDown: pressSpace(); return 0;
     case SpaceUp: releaseSpace(); return 0;
     case Recorder::ErrorMessage:
+        if (!session || recorder.error().empty()) return 0;
         recorder.finish(); finalized = true; held = false; notice = L"Запись прервана · можно сохранить"; update(); errorBox(recorder.error()); return 0;
     case ExportDone:
         if (exportThread.joinable()) exportThread.join();
@@ -486,7 +522,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         case Menu: menu(); break;
         case Minimize: releaseSpace(); ShowWindow(hwnd, SW_MINIMIZE); break;
         case Close: SendMessageW(hwnd, WM_CLOSE, 0, 0); break;
-        case Main: if (!walkie && !exporting) { if (session) saveRecording(); else begin(); } break;
+        case Main:
+            if (canDiscard()) discardRecording();
+            else if (!walkie && !exporting) { if (session) saveRecording(); else begin(); }
+            break;
         case Pause:
             if (session && !walkie && !exporting && !finalized) { recorder.setRecording(!recorder.isRecording()); notice.clear(); update(); } break;
         case Save: saveRecording(); break;

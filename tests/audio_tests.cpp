@@ -65,6 +65,16 @@ void writersAndExports(const fs::path& root) {
             std::wcout << L"PASS: export " << ext << L"\n";
         }
     } else std::cout << "SKIP: compressed exports (run scripts/setup-ffmpeg.ps1)\n";
+    Recorder recorder;
+    const auto disposable = root / L"Удалить черновик.wav";
+    fs::copy_file(source, disposable);
+    expect(!discardAudio(recorder, root, error), "never delete a directory");
+    expect(fs::exists(disposable), "failed deletion preserves draft");
+    expect(discardAudio(recorder, disposable, error), "discard a temporary WAV");
+    expect(!fs::exists(disposable), "discard removes the draft file");
+    expect(recorder.seconds() == 0 && !recorder.isRecording() && recorder.peak() == 0, "discard resets timer and audio state");
+    expect(fs::exists(source) && fs::exists(wav), "discard preserves other recordings");
+    std::cout << "PASS: discard / reset / deletion failure preserves recordings\n";
 }
 void microphone(const fs::path& root) {
     Recorder recorder; std::wstring error; auto path = root / L"microphone.wav";
@@ -89,6 +99,8 @@ void microphone(const fs::path& root) {
     expect(recorder.error().empty(), "no background capture error");
     expect(recorder.seconds() < 1.5 && recorder.seconds() > .7, "duration excludes pauses");
     std::cout << "PASS: real microphone / pause / resume / repeated radio holds (" << recorder.seconds() << "s)\n";
+    expect(discardAudio(recorder, path, error), "discard recorded microphone audio");
+    expect(!fs::exists(path) && recorder.seconds() == 0 && !recorder.isRecording(), "discard clears real capture and timer");
     // Test reopening after finish, including a session which is too short to save.
     expect(recorder.start(root / L"restart.wav", nullptr, error), "restart microphone");
     recorder.finish();

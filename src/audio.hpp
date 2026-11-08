@@ -32,6 +32,7 @@ public:
     void setRecording(bool recording) { recording_ = recording; }
     bool isRecording() const { return recording_; }
     void finish();
+    void reset();
     double seconds() const { return double(frames_.load()) / rate_.load(); }
     float peak() const { return recording_ ? peak_.load() : 0.f; }
     std::wstring error() const;
@@ -50,6 +51,8 @@ public:
 };
 
 std::filesystem::path findFfmpeg();
+// Close capture before deleting its temporary WAV; preserve counters on failure.
+bool discardAudio(Recorder& recorder, const std::filesystem::path& draft, std::wstring& error);
 // Never overwrite a destination; keep the source WAV on all errors.
 bool exportAudio(const std::filesystem::path& source,
     const std::filesystem::path& destination, const std::wstring& extension,
