@@ -1,0 +1,32 @@
+name: Windows build and tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build/cmake -A x64
+      - name: Build
+        run: cmake --build build/cmake --config Release
+      - name: Prepare encoder and portable app
+        shell: pwsh
+        run: |
+          ./scripts/setup-ffmpeg.ps1
+          Copy-Item build/cmake/Release/Dictophone.exe app/Dictophone.exe -Force
+      - name: Test with all codecs
+        run: ./build/cmake/Release/AudioTests.exe
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item README.md,LICENSE app/
+          Compress-Archive -Path app/* -DestinationPath build/Dictophone-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dictophone-Windows-x64
+          path: build/Dictophone-Windows-x64.zip

@@ -1,0 +1,8 @@
+/build/
+/app/ffmpeg.exe
+/app/ffprobe.exe
+/app/ffmpeg-license.txt
+/app/ffmpeg-build.txt
+*.zip
+*.part.*
+/.vs/
