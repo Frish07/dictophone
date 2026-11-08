@@ -13,7 +13,18 @@ jobs:
       - name: Configure
         run: cmake -S . -B build/cmake -A x64
       - name: Build
-        run: cmake --build build/cmake --config Release
+        shell: pwsh
+        run: |
+          $buildOutput = & cmake --build build/cmake --config Release 2>&1
+          $buildExit = $LASTEXITCODE
+          $buildOutput | ForEach-Object { Write-Output $_ }
+          if ($buildExit) {
+            $buildOutput | Where-Object { $_ -match '(?i)error|fatal' } | Select-Object -First 15 | ForEach-Object {
+              $detail = $_.ToString().Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
+              Write-Output "::error title=Windows compilation::$detail"
+            }
+            exit $buildExit
+          }
       - name: Prepare encoder and portable app
         shell: pwsh
         run: |
