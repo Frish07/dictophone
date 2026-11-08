@@ -23,7 +23,7 @@ constexpr wchar_t ClassName[] = L"Frish07.Dictophone";
 const std::array<std::wstring, 5> Formats{L"wav", L"mp3", L"ogg", L"flac", L"m4a"};
 HWND window = nullptr;
 HHOOK keyboardHook = nullptr;
-bool walkie = false, globalSpace = false, pinned = false, session = false,
+bool walkie = false, globalSpace = false, pinned = false, compact = false, session = false,
     exporting = false, held = false, modal = false, closeAfterSave = false, finalized = false;
 int formatIndex = 0;
 float scale = 1.f;
@@ -33,6 +33,12 @@ fs::path dataDir, outputDir, draft, savedPath;
 std::wstring notice = L"Готов к записи", exportError;
 std::deque<float> levels(49, .02f);
 HFONT normalFont = nullptr, smallFont = nullptr, timerFont = nullptr, titleFont = nullptr;
+HFONT compactTimerFont = nullptr;
+HWND tooltips = nullptr;
+int timerSeconds = -1;
+
+void layoutControls();
+void resizeWindow(int x, int y);
 
 int px(int value) { return int(value * scale + .5f); }
 fs::path knownFolder(REFKNOWNFOLDERID id) {
@@ -57,6 +63,7 @@ void saveSettings() {
     WritePrivateProfileStringW(L"settings", L"walkie", walkie ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"settings", L"globalSpace", globalSpace ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"settings", L"pinned", pinned ? L"1" : L"0", path.c_str());
+    WritePrivateProfileStringW(L"settings", L"compact", compact ? L"1" : L"0", path.c_str());
 }
 void loadSettings() {
     const auto path = dataDir / L"settings.ini";
@@ -68,15 +75,28 @@ void loadSettings() {
     walkie = GetPrivateProfileIntW(L"settings", L"walkie", 0, path.c_str()) != 0;
     globalSpace = GetPrivateProfileIntW(L"settings", L"globalSpace", 0, path.c_str()) != 0;
     pinned = GetPrivateProfileIntW(L"settings", L"pinned", 0, path.c_str()) != 0;
+    compact = GetPrivateProfileIntW(L"settings", L"compact", 0, path.c_str()) != 0;
 }
 void update() {
     if (!window) return;
-    SetWindowTextW(GetDlgItem(window, Main), walkie ? L"Удерживать" : session ? L"Стоп" : L"Запись");
-    SetWindowTextW(GetDlgItem(window, Pause), recorder.isRecording() ? L"Пауза" : L"Продолжить");
-    SetWindowTextW(GetDlgItem(window, Save), L"Сохранить");
-    EnableWindow(GetDlgItem(window, Main), !exporting && !(walkie && finalized));
-    EnableWindow(GetDlgItem(window, Pause), !walkie && session && !exporting && !finalized);
-    EnableWindow(GetDlgItem(window, Save), session && !exporting);
+    timerSeconds = -1;
+    auto label = [](int id, const wchar_t* value) {
+        wchar_t previous[80]{}; HWND button = GetDlgItem(window, id);
+        GetWindowTextW(button, previous, 80);
+        if (std::wstring(previous) != value) SetWindowTextW(button, value);
+    };
+    auto enabled = [](int id, bool value) {
+        HWND button = GetDlgItem(window, id);
+        if (bool(IsWindowEnabled(button)) != value) EnableWindow(button, value);
+    };
+    label(Main, walkie ? L"Удерживать" : session ? L"Стоп" : L"Запись");
+    label(Pause, recorder.isRecording() ? L"Пауза" : L"Продолжить");
+    enabled(Main, !exporting && !(walkie && finalized));
+    enabled(Pause, !walkie && session && !exporting && !finalized);
+    enabled(Save, session && !exporting);
+    HWND focused = GetFocus();
+    if (GetActiveWindow() == window && (!focused || !IsWindowEnabled(focused) || !IsWindowVisible(focused)))
+        SetFocus(IsWindowEnabled(GetDlgItem(window, Main)) ? GetDlgItem(window, Main) : window);
     for (int id : {Main, Pause, Save, Pin}) InvalidateRect(GetDlgItem(window, id), nullptr, FALSE);
     InvalidateRect(window, nullptr, FALSE);
 }
@@ -104,6 +124,15 @@ void releaseSpace() {
     if (!held) return;
     held = false;
     if (walkie && session && !exporting) { recorder.setRecording(false); notice.clear(); update(); }
+}
+void toggleCompact() {
+    releaseSpace(); compact = !compact;
+    // Move keyboard focus off header buttons before hiding them.
+    if (compact) SetFocus(GetDlgItem(window, Main));
+    layoutControls();
+    RECT current{}; GetWindowRect(window, &current);
+    resizeWindow(current.left, current.top);
+    saveSettings(); update();
 }
 void pressSpace() {
     if (!walkie || held || exporting || modal) return;
@@ -181,7 +210,7 @@ void openFolder(const fs::path& path) {
     if (ec || reinterpret_cast<INT_PTR>(ShellExecuteW(window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
         errorBox(L"Не удалось открыть папку:\n" + path.wstring());
 }
-void menu() {
+void menu(const POINT* anchor = nullptr) {
     releaseSpace(); modal = true;
     HMENU popup = CreatePopupMenu(), formats = CreatePopupMenu();
     const UINT locked = (session || exporting) ? MF_GRAYED : 0;
@@ -189,6 +218,9 @@ void menu() {
     AppendMenuW(popup, MF_STRING | locked | (walkie ? MF_CHECKED : 0), 202, L"Рация · удерживать пробел");
     AppendMenuW(popup, MF_STRING | (globalSpace ? MF_CHECKED : 0) | (walkie && !exporting ? 0 : MF_GRAYED),
         203, L"Пробел в других приложениях");
+    AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(popup, MF_STRING | (compact ? MF_CHECKED : 0), 208, L"Уменьшенное окно\tCtrl+M");
+    AppendMenuW(popup, MF_STRING | (pinned ? MF_CHECKED : 0), Pin, L"Поверх других окон");
     AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
     for (size_t i = 0; i < Formats.size(); ++i) {
         auto label = Formats[i]; std::transform(label.begin(), label.end(), label.begin(), ::towupper);
@@ -200,18 +232,25 @@ void menu() {
     AppendMenuW(popup, MF_STRING, 206, L"Открыть временные WAV");
     AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(popup, MF_STRING, 207, L"О приложении");
-    RECT button{}; GetWindowRect(GetDlgItem(window, Menu), &button);
-    const int selected = TrackPopupMenu(popup, TPM_RETURNCMD | TPM_RIGHTALIGN, button.right, button.bottom, 0, window, nullptr);
+    POINT position{};
+    if (anchor) position = *anchor;
+    else if (compact) GetCursorPos(&position);
+    else { RECT button{}; GetWindowRect(GetDlgItem(window, Menu), &button); position = {button.right, button.bottom}; }
+    const int selected = TrackPopupMenu(popup, TPM_RETURNCMD | TPM_RIGHTALIGN, position.x, position.y, 0, window, nullptr);
     DestroyMenu(popup); modal = false;
+    // A menu opened from the draggable timer may leave no keyboard focus.
+    SetFocus(IsWindowEnabled(GetDlgItem(window, Main)) ? GetDlgItem(window, Main) : window);
     if (selected == 201 || selected == 202) { walkie = selected == 202; notice = L"Готов к записи"; configureHook(); }
     if (selected == 203) { globalSpace = !globalSpace; configureHook(); }
     if (selected >= 220 && selected < 225) formatIndex = selected - 220;
     if (selected == 204) chooseFolder();
     if (selected == 205) openFolder(outputDir);
     if (selected == 206) openFolder(dataDir / L"Recovery");
+    if (selected == 208) toggleCompact();
+    if (selected == Pin) SendMessageW(window, WM_COMMAND, Pin, 0);
     if (selected == 207) {
         modal = true;
-        MessageBoxW(window, L"Dictophone 1.0\n\nДиктофон: запись → пауза → стоп.\nРация: держите пробел, чтобы записывать.\nКнопка «Сохранить» завершает запись.\n\nCtrl+S — сохранить. Ctrl+O — папка записей.\nПеретащите окно за заголовок.\nНастройки и черновики: %LOCALAPPDATA%\\Dictophone\n\nГлобальный пробел включается отдельно в меню.\nВ этом режиме он перехватывается в других приложениях.",
+        MessageBoxW(window, L"Dictophone 1.1.0\n\nДиктофон: запись → пауза → стоп.\nРация: держите пробел, чтобы записывать.\nКнопка «Сохранить» завершает запись.\n\nCtrl+S — сохранить. Ctrl+O — папка записей.\nCtrl+M — уменьшенное окно.\nВ уменьшенном окне: ПКМ — меню, таймер — перетащить.\nДвойной щелчок по таймеру — обычное окно.\nНастройки и черновики: %LOCALAPPDATA%\\Dictophone\n\nГлобальный пробел включается отдельно в меню.\nВ этом режиме он перехватывается в других приложениях.",
             L"О приложении", MB_OK | MB_ICONINFORMATION); modal = false;
     }
     saveSettings(); update();
@@ -230,13 +269,17 @@ void paint(HDC target) {
     RECT client{}; GetClientRect(window, &client);
     HDC dc = CreateCompatibleDC(target); HBITMAP bitmap = CreateCompatibleBitmap(target, client.right, client.bottom);
     auto old = SelectObject(dc, bitmap); auto bg = CreateSolidBrush(Bg); FillRect(dc, &client, bg); DeleteObject(bg);
+    int seconds = int(recorder.seconds()); wchar_t time[40]{};
+    if (seconds >= 3600) swprintf_s(time, L"%02d:%02d:%02d", seconds/3600, seconds/60%60, seconds%60);
+    else swprintf_s(time, L"%02d:%02d", seconds/60, seconds%60);
+    if (compact) {
+        text(dc, time, rect(184, 10, 112, 44), compactTimerFont, recorder.isRecording() ? Accent : Text,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    } else {
     text(dc, L"DICTOPHONE", rect(20, 12, 170, 28), titleFont, Text);
     text(dc, walkie ? L"РАЦИЯ" : L"ДИКТОФОН", rect(22, 49, 165, 20), smallFont, Accent);
     std::wstring format = Formats[formatIndex]; std::transform(format.begin(), format.end(), format.begin(), ::towupper);
     text(dc, format + L"  /  MONO", rect(218, 49, 120, 20), smallFont, Muted, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-    int seconds = int(recorder.seconds()); wchar_t time[40]{};
-    if (seconds >= 3600) swprintf_s(time, L"%02d:%02d:%02d", seconds/3600, seconds/60%60, seconds%60);
-    else swprintf_s(time, L"%02d:%02d", seconds/60, seconds%60);
     text(dc, time, rect(20, 73, 320, 56), timerFont, Text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     int i = 0;
     for (float level : levels) {
@@ -248,11 +291,37 @@ void paint(HDC target) {
     text(dc, walkie ? (globalSpace ? L"Пробел работает во всех приложениях" : L"Удерживайте пробел в этом окне") : L"Нажмите ▶, чтобы начать запись",
         rect(16, 244, 328, 18), smallFont, Muted, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     text(dc, outputDir.wstring(), rect(20, 269, 320, 18), smallFont, RGB(105, 118, 139), DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
+    }
     BitBlt(target, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, old); DeleteObject(bitmap); DeleteDC(dc);
 }
+void drawCompactIcon(HDC dc, int id, RECT r, COLORREF color, COLORREF background) {
+    const int cx = (r.left+r.right)/2, cy = (r.top+r.bottom)/2, unit = px(9);
+    auto brush = CreateSolidBrush(color); auto oldBrush = SelectObject(dc, brush);
+    auto oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    if (id == Main && walkie) Ellipse(dc, cx-unit, cy-unit, cx+unit, cy+unit);
+    else if (id == Main && session) Rectangle(dc, cx-unit, cy-unit, cx+unit, cy+unit);
+    else if (id == Pause && recorder.isRecording()) {
+        Rectangle(dc, cx-unit, cy-unit, cx-px(3), cy+unit);
+        Rectangle(dc, cx+px(3), cy-unit, cx+unit, cy+unit);
+    } else if (id == Save) {
+        RoundRect(dc, cx-unit, cy-unit, cx+unit, cy+unit, px(3), px(3));
+        auto cutout = CreateSolidBrush(background);
+        RECT slot{cx-px(5), cy-unit, cx+px(4), cy-px(2)}; FillRect(dc, &slot, cutout);
+        RECT label{cx-px(5), cy+px(3), cx+px(5), cy+unit}; FillRect(dc, &label, cutout);
+        DeleteObject(cutout);
+    } else {
+        POINT triangle[]{{cx-unit+px(2),cy-unit},{cx+unit,cy},{cx-unit+px(2),cy+unit}};
+        Polygon(dc, triangle, 3);
+    }
+    SelectObject(dc, oldBrush); SelectObject(dc, oldPen); DeleteObject(brush);
+}
 void drawButton(const DRAWITEMSTRUCT* item) {
-    HDC dc = item->hDC; RECT r = item->rcItem;
+    RECT r = item->rcItem;
+    // Compose the complete button offscreen, including its rounded corners.
+    HDC dc = CreateCompatibleDC(item->hDC);
+    auto bitmap = CreateCompatibleBitmap(item->hDC, r.right-r.left, r.bottom-r.top);
+    auto oldBitmap = SelectObject(dc, bitmap);
     auto background = CreateSolidBrush(Bg); FillRect(dc, &r, background); DeleteObject(background);
     const bool disabled = (item->itemState & ODS_DISABLED) != 0;
     const bool down = (item->itemState & ODS_SELECTED) != 0;
@@ -271,8 +340,12 @@ void drawButton(const DRAWITEMSTRUCT* item) {
     if (id == Main) label = walkie ? L"● Держать" : session ? L"■ Стоп" : L"▶ Запись";
     if (id == Pause) label = recorder.isRecording() ? L"Ⅱ" : L"▶";
     if (id == Save) label = L"Сохранить";
-    text(dc, label, r, normalFont, foreground, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (compact && (id == Main || id == Pause || id == Save))
+        drawCompactIcon(dc, id, r, foreground, disabled ? RGB(27, 31, 40) : fill);
+    else text(dc, label, r, normalFont, foreground, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     if ((item->itemState & ODS_FOCUS) && !disabled) { InflateRect(&r, -px(4), -px(4)); DrawFocusRect(dc, &r); }
+    BitBlt(item->hDC, 0, 0, item->rcItem.right, item->rcItem.bottom, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, oldBitmap); DeleteObject(bitmap); DeleteDC(dc);
 }
 void addButton(int id, const wchar_t* label, int x, int y, int w, int h, const wchar_t* tooltip, HWND tips) {
     HWND button = CreateWindowExW(0, L"BUTTON", label, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
@@ -282,21 +355,50 @@ void addButton(int id, const wchar_t* label, int x, int y, int w, int h, const w
     info.hwnd = window; info.uId = reinterpret_cast<UINT_PTR>(button); info.lpszText = const_cast<wchar_t*>(tooltip);
     SendMessageW(tips, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
 }
-LRESULT CALLBACK mainButtonProc(HWND button, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
-    if (walkie && message == WM_LBUTTONDOWN && !exporting) {
+LRESULT CALLBACK buttonProc(HWND button, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+    if (message == WM_ERASEBKGND) return 1;
+    const bool main = GetDlgCtrlID(button) == Main;
+    if (main && walkie && message == WM_LBUTTONDOWN && !exporting) {
         SetFocus(button); SetCapture(button); pressSpace(); return 0;
     }
-    if (walkie && message == WM_LBUTTONUP) { releaseSpace(); ReleaseCapture(); return 0; }
-    if (walkie && (message == WM_CAPTURECHANGED || message == WM_CANCELMODE)) releaseSpace();
+    if (main && walkie && message == WM_LBUTTONUP) { releaseSpace(); ReleaseCapture(); return 0; }
+    if (main && walkie && (message == WM_CAPTURECHANGED || message == WM_CANCELMODE)) releaseSpace();
     return DefSubclassProc(button, message, wp, lp);
+}
+void layoutControls() {
+    for (int id : {Pin, Menu, Minimize, Close}) ShowWindow(GetDlgItem(window, id), compact ? SW_HIDE : SW_SHOWNA);
+    auto move = [](int id, int x, int y, int w, int h) {
+        SetWindowPos(GetDlgItem(window, id), nullptr, px(x), px(y), px(w), px(h), SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+    };
+    if (compact) {
+        move(Main, 10, 10, 52, 44); move(Pause, 70, 10, 44, 44); move(Save, 122, 10, 52, 44);
+    } else {
+        move(Main, 22, 176, 120, 40); move(Pause, 150, 176, 52, 40); move(Save, 210, 176, 128, 40);
+    }
+    TOOLINFOW timerTip{}; timerTip.cbSize = sizeof(timerTip); timerTip.hwnd = window; timerTip.uId = 800;
+    timerTip.rect = compact ? RECT{px(184),px(10),px(296),px(54)} : RECT{px(20),px(73),px(340),px(129)};
+    SendMessageW(tooltips, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&timerTip));
+    RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+}
+void resizeWindow(int x, int y) {
+    const int width = px(compact ? 306 : 360), height = px(compact ? 64 : 300);
+    MONITORINFO monitor{}; monitor.cbSize = sizeof(monitor);
+    if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        x = std::clamp(x, int(monitor.rcWork.left), std::max(int(monitor.rcWork.left), int(monitor.rcWork.right)-width));
+        y = std::clamp(y, int(monitor.rcWork.top), std::max(int(monitor.rcWork.top), int(monitor.rcWork.bottom)-height));
+    }
+    SetWindowPos(window, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 void createControls() {
     auto font = [](int size, int weight, const wchar_t* face) { return CreateFontW(-px(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, face); };
     normalFont = font(13, FW_SEMIBOLD, L"Segoe UI"); smallFont = font(11, FW_NORMAL, L"Segoe UI");
     timerFont = font(45, FW_NORMAL, L"Segoe UI"); titleFont = font(13, FW_BOLD, L"Segoe UI");
+    compactTimerFont = font(22, FW_SEMIBOLD, L"Consolas");
     HWND tips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP,
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, window, nullptr, GetModuleHandleW(nullptr), nullptr);
+    tooltips = tips;
+    SendMessageW(tips, TTM_SETMAXTIPWIDTH, 0, px(280));
     addButton(Pin, L"Закрепить поверх окон", 220, 10, 28, 30, L"Закрепить поверх остальных окон", tips);
     addButton(Menu, L"Меню", 250, 10, 28, 30, L"Режим, формат и папка сохранения", tips);
     addButton(Minimize, L"Свернуть", 280, 10, 28, 30, L"Свернуть", tips);
@@ -304,7 +406,12 @@ void createControls() {
     addButton(Main, L"Запись", 22, 176, 120, 40, L"Запись / стоп. В режиме рации — удерживать", tips);
     addButton(Pause, L"Пауза", 150, 176, 52, 40, L"Пауза / продолжить", tips);
     addButton(Save, L"Сохранить", 210, 176, 128, 40, L"Сохранить запись (Ctrl+S)", tips);
-    SetWindowSubclass(GetDlgItem(window, Main), mainButtonProc, 1, 0);
+    for (int id : {Pin, Menu, Minimize, Close, Main, Pause, Save}) SetWindowSubclass(GetDlgItem(window, id), buttonProc, id, 0);
+    TOOLINFOW timerTip{}; timerTip.cbSize = sizeof(timerTip); timerTip.uFlags = TTF_SUBCLASS;
+    timerTip.hwnd = window; timerTip.uId = 800;
+    timerTip.lpszText = const_cast<wchar_t*>(L"ПКМ — меню. Ctrl+M — размер окна. В уменьшенном виде перетащите за таймер; двойной щелчок — обычное окно.");
+    SendMessageW(tips, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&timerTip));
+    layoutControls();
 }
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     switch (message) {
@@ -314,11 +421,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     case WM_NCCALCSIZE: return 0;
     case WM_DPICHANGED: {
         scale = HIWORD(wp) / 96.f;
+        if (tooltips) { DestroyWindow(tooltips); tooltips = nullptr; }
         while (HWND child = GetWindow(hwnd, GW_CHILD)) DestroyWindow(child);
-        for (HFONT font : {normalFont, smallFont, timerFont, titleFont}) DeleteObject(font);
+        for (HFONT font : {normalFont, smallFont, timerFont, titleFont, compactTimerFont}) DeleteObject(font);
         createControls();
         auto* suggested = reinterpret_cast<RECT*>(lp);
-        SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, px(360), px(300), SWP_NOZORDER | SWP_NOACTIVATE);
+        resizeWindow(suggested->left, suggested->top);
         update(); return 0;
     }
     case WM_ERASEBKGND: return 1;
@@ -326,16 +434,37 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     case WM_DRAWITEM: drawButton(reinterpret_cast<DRAWITEMSTRUCT*>(lp)); return TRUE;
     case WM_NCHITTEST: {
         POINT point{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}; ScreenToClient(hwnd, &point);
-        if (point.y < px(45) && point.x < px(215)) return HTCAPTION;
+        if (compact ? point.x >= px(184) : (point.y < px(45) && point.x < px(215))) return HTCAPTION;
         return HTCLIENT;
     }
+    case WM_CONTEXTMENU: {
+        POINT position{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        if (position.x == -1 && position.y == -1) { RECT current{}; GetWindowRect(hwnd, &current); position = {current.right, current.bottom}; }
+        menu(&position); return 0;
+    }
+    case WM_NCRBUTTONUP:
+        if (compact && wp == HTCAPTION) { POINT position{GET_X_LPARAM(lp),GET_Y_LPARAM(lp)}; menu(&position); return 0; }
+        break;
+    case WM_NCLBUTTONDBLCLK:
+        if (compact && wp == HTCAPTION) { toggleCompact(); return 0; }
+        break;
     case WM_ACTIVATE:
         if (LOWORD(wp) == WA_INACTIVE && !globalSpace) releaseSpace();
-        return 0;
-    case WM_TIMER:
-        levels.pop_front(); levels.push_back(recorder.peak()); InvalidateRect(hwnd, nullptr, FALSE);
+        break; // DefWindowProc restores keyboard focus when the window activates.
+    case WM_TIMER: {
+        if (!compact) {
+            levels.pop_front(); levels.push_back(recorder.peak());
+            auto wave = rect(30, 131, 300, 32); InvalidateRect(hwnd, &wave, FALSE);
+        }
+        const int seconds = int(recorder.seconds());
+        if (seconds != timerSeconds) {
+            timerSeconds = seconds;
+            auto timer = compact ? rect(184, 10, 112, 44) : rect(20, 73, 320, 56);
+            InvalidateRect(hwnd, &timer, FALSE);
+        }
         if (held && !(GetAsyncKeyState(VK_SPACE) & 0x8000) && GetCapture() != GetDlgItem(hwnd, Main)) releaseSpace();
         return 0;
+    }
     case SpaceDown: pressSpace(); return 0;
     case SpaceUp: releaseSpace(); return 0;
     case Recorder::ErrorMessage:
@@ -391,12 +520,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     for (int i = 1; i + 1 < argc; ++i) if (std::wstring(args[i]) == L"--data-dir") dataDir = fs::absolute(args[++i]);
     LocalFree(args); loadSettings();
     scale = GetDpiForSystem() / 96.f;
-    WNDCLASSEXW cls{}; cls.cbSize = sizeof(cls); cls.lpfnWndProc = windowProc; cls.hInstance = instance;
+    WNDCLASSEXW cls{}; cls.cbSize = sizeof(cls); cls.style = CS_DBLCLKS; cls.lpfnWndProc = windowProc; cls.hInstance = instance;
     cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.lpszClassName = ClassName;
     cls.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1)); cls.hIconSm = cls.hIcon;
     RegisterClassExW(&cls);
-    RECT size{0, 0, px(360), px(300)};
-    constexpr DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    RECT size{0, 0, px(compact ? 306 : 360), px(compact ? 64 : 300)};
+    // Parent animation must never paint over native child buttons.
+    constexpr DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     // WM_NCCALCSIZE extends the client area across the standard caption.
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, ClassName, L"Dictophone", style, CW_USEDEFAULT, CW_USEDEFAULT,
         size.right-size.left, size.bottom-size.top, nullptr, nullptr, instance, nullptr);
@@ -415,12 +545,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
             if (msg.message == WM_KEYDOWN && (GetKeyState(VK_CONTROL) & 0x8000)) {
                 if (msg.wParam == 'S') { saveRecording(); continue; }
                 if (msg.wParam == 'O') { openFolder(outputDir); continue; }
+                if (msg.wParam == 'M') { toggleCompact(); continue; }
             }
             if (IsDialogMessageW(hwnd, &msg)) continue;
         }
         TranslateMessage(&msg); DispatchMessageW(&msg);
     }
     if (exportThread.joinable()) exportThread.join();
-    for (HFONT font : {normalFont, smallFont, timerFont, titleFont}) DeleteObject(font);
+    for (HFONT font : {normalFont, smallFont, timerFont, titleFont, compactTimerFont}) DeleteObject(font);
     CoUninitialize(); return 0;
 }

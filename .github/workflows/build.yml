@@ -35,8 +35,8 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          Copy-Item README.md,LICENSE app/
-          Compress-Archive -Path app/* -DestinationPath build/Dictophone-Windows-x64.zip
+          $files = @('app/Dictophone.exe','app/ffmpeg.exe','app/ffmpeg-license.txt','app/ffmpeg-build.txt','README.md','LICENSE','CHANGELOG.md')
+          Compress-Archive -Path $files -DestinationPath build/Dictophone-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Dictophone-Windows-x64

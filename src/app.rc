@@ -2,8 +2,8 @@
 1 ICON "dictophone.ico"
 1 RT_MANIFEST "app.manifest"
 1 VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
+FILEVERSION 1,1,0,0
+PRODUCTVERSION 1,1,0,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -12,9 +12,9 @@ BEGIN
   BLOCK "040904B0"
   BEGIN
    VALUE "FileDescription", "Dictophone\0"
-   VALUE "FileVersion", "1.0.0\0"
+   VALUE "FileVersion", "1.1.0\0"
    VALUE "ProductName", "Dictophone\0"
-   VALUE "ProductVersion", "1.0.0\0"
+   VALUE "ProductVersion", "1.1.0\0"
   END
  END
  BLOCK "VarFileInfo"
