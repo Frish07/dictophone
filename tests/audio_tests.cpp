@@ -52,7 +52,10 @@ void writersAndExports(const fs::path& root) {
     expect(writer.close(), "finalize"); checkWave(source, 48000, 48000);
     std::wstring error;
     auto wav = root / L"Экспорт с пробелами.wav";
+    const auto existingPartial = root / L"Экспорт с пробелами.part.wav";
+    std::ofstream(existingPartial, std::ios::binary).put('x');
     expect(exportAudio(source, wav, L"wav", {}, error), "WAV export"); checkWave(wav, 48000, 48000);
+    expect(std::ifstream(existingPartial, std::ios::binary).get() == 'x', "named export preserves unrelated partial files");
     expect(!exportAudio(source, wav, L"wav", {}, error), "never overwrite an existing recording");
     expect(!exportAudio(source, root / L"no-encoder.mp3", L"mp3", {}, error), "report missing encoder");
     expect(fs::exists(source), "keep source on encoder failure");

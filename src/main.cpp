@@ -54,7 +54,10 @@ std::wstring stamp() {
     return value;
 }
 void errorBox(const std::wstring& error) {
-    modal = true; MessageBoxW(window, error.c_str(), L"Диктофон", MB_OK | MB_ICONERROR); modal = false;
+    const bool wasModal = modal;
+    modal = true;
+    MessageBoxW(window, error.c_str(), L"Диктофон", MB_OK | MB_ICONERROR);
+    modal = wasModal;
 }
 void saveSettings() {
     std::error_code ec; fs::create_directories(dataDir, ec);
@@ -164,19 +167,94 @@ void pressSpace() {
     held = true;
     if (!begin()) held = false;
 }
-void saveRecording() {
-    if (!session || exporting) return;
-    releaseSpace(); recorder.finish(); finalized = true;
+fs::path chooseSavePath(const std::wstring& extension) {
+    IFileSaveDialog* dialog = nullptr;
+    HRESULT result = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
+    if (FAILED(result)) {
+        errorBox(L"Не удалось открыть окно сохранения.");
+        return {};
+    }
+
+    const auto pattern = L"*." + extension;
+    const auto label = L"Аудио (" + pattern + L")";
+    const auto suggestedName = L"Запись-" + stamp();
+    const COMDLG_FILTERSPEC fileType{label.c_str(), pattern.c_str()};
+    result = dialog->SetOptions(FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOREADONLYRETURN |
+        FOS_NOCHANGEDIR | FOS_STRICTFILETYPES);
+    if (SUCCEEDED(result)) result = dialog->SetFileTypes(1, &fileType);
+    if (SUCCEEDED(result)) result = dialog->SetDefaultExtension(extension.c_str());
+    if (SUCCEEDED(result)) result = dialog->SetFileName(suggestedName.c_str());
+    if (SUCCEEDED(result)) result = dialog->SetTitle(L"Сохранить запись как");
+
+    if (SUCCEEDED(result)) {
+        std::error_code ignored;
+        fs::create_directories(outputDir, ignored);
+        IShellItem* folder = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(outputDir.c_str(), nullptr, IID_PPV_ARGS(&folder)))) {
+            dialog->SetFolder(folder);
+            folder->Release();
+        }
+        modal = true;
+        result = dialog->Show(window);
+        modal = false;
+    }
+
+    PWSTR name = nullptr;
+    if (SUCCEEDED(result)) {
+        IShellItem* item = nullptr;
+        result = dialog->GetResult(&item);
+        if (SUCCEEDED(result)) {
+            result = item->GetDisplayName(SIGDN_FILESYSPATH, &name);
+            item->Release();
+        }
+    }
+    dialog->Release();
+    fs::path destination;
+    if (SUCCEEDED(result) && name) destination = name;
+    CoTaskMemFree(name);
+    if (FAILED(result) && result != HRESULT_FROM_WIN32(ERROR_CANCELLED))
+        errorBox(L"Не удалось выбрать файл для сохранения. Запись можно сохранить повторно.");
+    return destination;
+}
+void saveRecording(bool exitAfterSave = false) {
+    if (!session || exporting || modal) return;
+    releaseSpace();
+    if (recorder.isRecording()) {
+        recorder.setRecording(false);
+        notice.clear();
+    }
+    update();
+
+    const auto extension = Formats[formatIndex];
+    auto destination = chooseSavePath(extension);
+    if (destination.empty()) return;
+    const auto suffix = L"." + extension;
+    if (destination.extension().empty()) destination += suffix;
+    if (CompareStringOrdinal(destination.extension().c_str(), -1, suffix.c_str(), -1, TRUE) != CSTR_EQUAL) {
+        errorBox(L"Укажите имя файла с расширением " + suffix + L".");
+        return;
+    }
+    std::error_code pathError;
+    if (fs::exists(destination, pathError)) {
+        errorBox(L"Файл уже существует. Выберите другое имя.");
+        return;
+    }
+    if (pathError) {
+        errorBox(L"Не удалось проверить выбранный путь. Выберите другую папку.");
+        return;
+    }
+
+    recorder.finish(); finalized = true;
     if (recorder.seconds() < .01) {
         std::error_code ec; fs::remove(draft, ec); session = false; finalized = false;
         notice = L"Запись слишком короткая";
-        if (closeAfterSave) { DestroyWindow(window); return; }
+        if (exitAfterSave) { DestroyWindow(window); return; }
         update(); return;
     }
+    closeAfterSave = exitAfterSave;
     exporting = true; notice = L"Сохраняю…"; update();
-    savedPath = outputDir / (L"Запись-" + stamp() + L"." + Formats[formatIndex]);
+    savedPath = destination;
     const auto input = draft, output = savedPath, encoder = findFfmpeg();
-    const auto extension = Formats[formatIndex];
     if (exportThread.joinable()) exportThread.join();
     exportThread = std::thread([input, output, encoder, extension] {
         std::wstring failure;
@@ -275,7 +353,7 @@ void menu(const POINT* anchor = nullptr) {
     if (selected == Pin) SendMessageW(window, WM_COMMAND, Pin, 0);
     if (selected == 207) {
         modal = true;
-        MessageBoxW(window, L"Dictophone 1.2.0\n\nДиктофон: запись → пауза → продолжить / сохранить.\nНа паузе главная кнопка удаляет запись после подтверждения.\nРация: держите пробел, чтобы записывать.\nКнопка «Сохранить» завершает запись.\n\nCtrl+S — сохранить. Ctrl+O — папка записей.\nCtrl+M — уменьшенное окно.\nВ уменьшенном окне: ПКМ — меню, таймер — перетащить.\nДвойной щелчок по таймеру — обычное окно.\nНастройки и черновики: %LOCALAPPDATA%\\Dictophone\n\nГлобальный пробел включается отдельно в меню.\nВ этом режиме он перехватывается в других приложениях.",
+        MessageBoxW(window, L"Dictophone 1.3.0\n\nДиктофон: запись → пауза → продолжить / сохранить.\nНа паузе главная кнопка удаляет запись после подтверждения.\nРация: держите пробел, чтобы записывать.\nПри сохранении можно выбрать папку и ввести имя записи.\n\nCtrl+S — сохранить. Ctrl+O — папка записей.\nCtrl+M — уменьшенное окно.\nВ уменьшенном окне: ПКМ — меню, таймер — перетащить.\nДвойной щелчок по таймеру — обычное окно.\nНастройки и черновики: %LOCALAPPDATA%\\Dictophone\n\nГлобальный пробел включается отдельно в меню.\nВ этом режиме он перехватывается в других приложениях.",
             L"О приложении", MB_OK | MB_ICONINFORMATION); modal = false;
     }
     saveSettings(); update();
@@ -532,6 +610,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_CLOSE:
+        if (modal) return 0;
         releaseSpace();
         if (exporting) { notice = L"Дождитесь окончания сохранения"; update(); return 0; }
         if (session) {
@@ -540,7 +619,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
                 L"Есть несохранённая запись", MB_YESNOCANCEL | MB_ICONQUESTION);
             modal = false;
             if (answer == IDCANCEL) return 0;
-            if (answer == IDYES) { closeAfterSave = true; saveRecording(); return 0; }
+            if (answer == IDYES) { saveRecording(true); return 0; }
         }
         recorder.finish(); DestroyWindow(hwnd); return 0;
     case WM_DESTROY:

@@ -224,7 +224,13 @@ bool exportAudio(const std::filesystem::path& source, const std::filesystem::pat
     try {
         std::filesystem::create_directories(destination.parent_path());
         if (std::filesystem::exists(destination)) { error = L"Файл уже существует. Выберите другое имя."; return false; }
-        auto partial = destination.parent_path() / (destination.stem().wstring() + L".part." + extension);
+        GUID exportId{};
+        wchar_t temporaryName[39]{};
+        if (FAILED(CoCreateGuid(&exportId)) || !StringFromGUID2(exportId, temporaryName, 39)) {
+            error = L"Не удалось создать временное имя для экспорта.";
+            return false;
+        }
+        const auto partial = destination.parent_path() / (std::wstring(temporaryName) + L".part." + extension);
         if (extension == L"wav") {
             if (!CopyFileW(source.c_str(), partial.c_str(), TRUE)) {
                 error = L"Не удалось скопировать WAV. Проверьте папку и свободное место."; return false;

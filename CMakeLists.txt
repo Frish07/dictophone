@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Dictophone VERSION 1.2.0 LANGUAGES CXX RC)
+project(Dictophone VERSION 1.3.0 LANGUAGES CXX RC)
 if(NOT WIN32)
   message(FATAL_ERROR "Dictophone is a Windows 10/11 application")
 endif()
