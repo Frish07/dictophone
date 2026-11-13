@@ -1,0 +1,62 @@
+name: Portable release on Windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/portable-release.yml
+      - scripts/test-portable-release.ps1
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag (leave blank to test the latest release)
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    name: Portable ZIP (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Download the published ZIP
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $api = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases"
+          $endpoint = if ($env:RELEASE_TAG) {
+            "$api/tags/$([Uri]::EscapeDataString($env:RELEASE_TAG))"
+          } else {
+            "$api/latest"
+          }
+          $release = Invoke-RestMethod -Uri $endpoint -Headers @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+          }
+          $name = "Dictophone-$($release.tag_name.TrimStart('v'))-Windows-x64.zip"
+          $asset = $release.assets | Where-Object { $_.name -eq $name -and $_.state -eq 'uploaded' }
+          if (!$asset) { throw "Published archive missing from release $($release.tag_name): $name" }
+          $archive = Join-Path $env:RUNNER_TEMP 'Dictophone-Windows-x64.zip'
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $archive
+          if ((Get-Item -LiteralPath $archive).Length -ne $asset.size) { throw 'Archive size mismatch.' }
+          if ($asset.digest) {
+            $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+            if ($asset.digest -ine "sha256:$hash") { throw 'Archive SHA256 mismatch.' }
+          }
+          Write-Host "Testing $name from $($release.html_url)"
+      - name: Run the unpacked app and encoder without installing packages
+        shell: pwsh
+        run: ./scripts/test-portable-release.ps1 -Archive (Join-Path $env:RUNNER_TEMP 'Dictophone-Windows-x64.zip')

@@ -4,9 +4,11 @@
 
 Текущая версия: **1.3.0**. Готовый комплект с FFmpeg доступен в [релизах](https://github.com/Frish07/dictophone/releases). Распакуйте архив целиком и запустите `Dictophone.exe`.
 
+GitHub Actions проверяет запуск приложения из опубликованного ZIP и работу всех пяти форматов с включённым FFmpeg без установки пакетов. [Проверка переносимого релиза](https://github.com/Frish07/dictophone/actions/workflows/portable-release.yml)
+
 ## Запуск
 
-Откройте **[`app/Dictophone.exe`](app/Dictophone.exe)**. Для записи в WAV ничего дополнительно не нужно.
+Если запускаете приложение из исходников, откройте **[`app/Dictophone.exe`](app/Dictophone.exe)**. Для записи в WAV ничего дополнительно не нужно.
 
 Для **MP3, OGG, FLAC и M4A** один раз выполните из корня проекта:
 
