@@ -10,8 +10,8 @@
 namespace dictophone {
 class WaveWriter {
 public:
-    bool open(const std::filesystem::path& path, unsigned rate);
-    bool append(const int16_t* samples, size_t count);
+    bool open(const std::filesystem::path& path, unsigned rate, unsigned channels, uint32_t channelMask);
+    bool append(const std::vector<BYTE>& pcm24);
     bool checkpoint();
     bool close();
     uint64_t frames() const { return frames_; }
@@ -19,11 +19,13 @@ public:
 private:
     std::fstream stream_;
     uint64_t frames_ = 0;
+    unsigned frameBytes_ = 0;
+    uint32_t headerBytes_ = 0;
 };
 
-// Convert the endpoint's shared-mode format to 16-bit mono.
-std::vector<int16_t> toMono(const BYTE* data, size_t frames,
-    unsigned channels, unsigned bits, bool floatingPoint, bool silent);
+// Pack each channel independently and return the peak for the meter.
+float packPcm24(std::vector<BYTE>& output, const BYTE* data, size_t samples,
+    unsigned bits, bool floatingPoint, bool silent);
 
 class Recorder {
 public:
@@ -34,6 +36,7 @@ public:
     void finish();
     void reset();
     double seconds() const { return double(frames_.load()) / rate_.load(); }
+    unsigned sampleRate() const { return rate_; }
     float peak() const { return recording_ ? peak_.load() : 0.f; }
     std::wstring error() const;
     static constexpr UINT ErrorMessage = WM_APP + 1;

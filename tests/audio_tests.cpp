@@ -14,47 +14,74 @@ uint32_t read32(std::ifstream& in) {
     unsigned char bytes[4]{}; in.read(reinterpret_cast<char*>(bytes), 4);
     return uint32_t(bytes[0]) | uint32_t(bytes[1]) << 8 | uint32_t(bytes[2]) << 16 | uint32_t(bytes[3]) << 24;
 }
-void checkWave(const fs::path& path, uint32_t frames, unsigned rate) {
+void checkWave(const fs::path& path, uint32_t frames, unsigned rate, unsigned channels, uint32_t mask = 0) {
+    const uint32_t dataOffset = mask || channels > 2 ? 68 : 44;
+    const uint32_t dataBytes = frames * channels * 3;
+    const uint32_t fileSize = dataOffset + dataBytes + (dataBytes & 1);
     std::ifstream in(path, std::ios::binary); char header[12]{}; in.read(header, 12);
     expect(std::memcmp(header, "RIFF", 4) == 0 && std::memcmp(header+8, "WAVE", 4) == 0, "WAV signature");
-    in.seekg(4); expect(read32(in) == frames * 2 + 36, "RIFF size");
+    in.seekg(4); expect(read32(in) == fileSize - 8, "RIFF size includes padding");
+    in.seekg(22); expect((read32(in) & 0xffff) == channels, "preserves channel count");
     in.seekg(24); expect(read32(in) == rate, "sample rate");
-    in.seekg(40); expect(read32(in) == frames * 2, "data size");
-    expect(fs::file_size(path) == 44ull + frames * 2, "actual WAV length");
+    in.seekg(34); expect((read32(in) & 0xffff) == 24, "24-bit samples");
+    if (dataOffset == 68) { in.seekg(40); expect(read32(in) == mask, "preserves channel mask"); }
+    in.seekg(dataOffset - 4); expect(read32(in) == dataBytes, "data size excludes padding");
+    expect(fs::file_size(path) == fileSize, "actual WAV length");
 }
 void conversions() {
-    float stereo[]{1, -1, .5f, .5f, 2, 2, -2, -2, std::numeric_limits<float>::quiet_NaN(), 0};
-    auto pcm = toMono(reinterpret_cast<const BYTE*>(stereo), 5, 2, 32, true, false);
-    expect(pcm[0] == 0 && pcm[1] == 16383 && pcm[2] == 32767 && pcm[3] == -32767 && pcm[4] == 0, "float, clipping, downmix, NaN");
-    auto silence = toMono(nullptr, 8, 2, 32, true, true);
-    expect(silence == std::vector<int16_t>(8, 0), "silent packets never dereference null");
-    int16_t signed16[]{-32768, 32767};
-    pcm = toMono(reinterpret_cast<const BYTE*>(signed16), 2, 1, 16, false, false);
-    expect(pcm[0] == -32767 && pcm[1] >= 32765, "PCM16 sign");
-    BYTE signed24[]{0,0,0x80, 0xff,0xff,0x7f};
-    pcm = toMono(signed24, 2, 1, 24, false, false);
-    expect(pcm[0] == -32767 && pcm[1] >= 32766, "PCM24 sign extension");
-    int32_t signed32[]{INT32_MIN, INT32_MAX};
-    pcm = toMono(reinterpret_cast<const BYTE*>(signed32), 2, 1, 32, false, false);
-    expect(pcm[0] == -32767 && pcm[1] >= 32766, "PCM32 sign");
-    BYTE unsigned8[]{0,128,255};
-    pcm = toMono(unsigned8, 3, 1, 8, false, false);
-    expect(pcm[0] == -32767 && pcm[1] == 0 && pcm[2] > 32000, "PCM8 unsigned");
+    const float stereo[]{.5f, -.5f, 2.f, -2.f, std::numeric_limits<float>::quiet_NaN(), 1.f / 8388608.f};
+    std::vector<BYTE> pcm;
+    const auto peak = packPcm24(pcm, reinterpret_cast<const BYTE*>(stereo), 6, 32, true, false);
+    expect(pcm == std::vector<BYTE>{0,0,0x40, 0,0,0xc0, 0xff,0xff,0x7f, 0,0,0x80, 0,0,0, 1,0,0},
+        "preserves opposite-phase channels and quiet samples, clips out-of-range floats and handles NaN");
+    expect(peak == 1.f, "peak uses the loudest channel");
+    expect(packPcm24(pcm, nullptr, 8, 32, true, true) == 0.f && pcm == std::vector<BYTE>(24, 0),
+        "silent packets never dereference null");
+
+    const BYTE pcm8[]{0,128,255};
+    packPcm24(pcm, pcm8, 3, 8, false, false);
+    expect(pcm == std::vector<BYTE>{0,0,0x80, 0,0,0, 0,0,0x7f}, "PCM8 unsigned conversion");
+    const BYTE pcm16[]{0,0x80, 0xff,0x7f};
+    packPcm24(pcm, pcm16, 2, 16, false, false);
+    expect(pcm == std::vector<BYTE>{0,0,0x80, 0,0xff,0x7f}, "PCM16 signed conversion");
+    const BYTE pcm24[]{1,0,0x80, 0xff,0xff,0x7f};
+    packPcm24(pcm, pcm24, 2, 24, false, false);
+    expect(pcm == std::vector<BYTE>(pcm24, pcm24 + 6), "PCM24 bytes are preserved");
+    const BYTE pcm32[]{0x20,1,0,0x80, 0x80,0xfe,0xff,0x7f};
+    packPcm24(pcm, pcm32, 2, 32, false, false);
+    expect(pcm == std::vector<BYTE>{1,0,0x80, 0xfe,0xff,0x7f}, "PCM32 keeps its high 24 bits");
 }
 void writersAndExports(const fs::path& root) {
+    const auto mono = root / L"odd.wav";
+    WaveWriter odd;
+    expect(odd.open(mono, 48000, 1, 0) && odd.append({1,2,3}) && odd.checkpoint(), "odd-sized WAV checkpoint");
+    checkWave(mono, 1, 48000, 1);
+    expect(odd.append({4,5,6}) && odd.close(), "append replaces the checkpoint padding");
+    checkWave(mono, 2, 48000, 1);
+    std::ifstream monoData(mono, std::ios::binary);
+    monoData.seekg(44);
+    for (int value = 1; value <= 6; ++value) expect(monoData.get() == value, "padding does not interrupt audio");
+
     const auto source = root / L"Исходник тест.wav";
-    WaveWriter writer; expect(writer.open(source, 48000), "open Unicode WAV path");
-    std::vector<int16_t> samples(48000);
-    for (size_t i = 0; i < samples.size(); ++i) samples[i] = int16_t(std::sin(i * 440. * 6.283185307179586 / 48000.) * 16000.);
-    expect(writer.append(samples.data(), 12000), "first segment");
-    expect(writer.checkpoint(), "checkpoint"); checkWave(source, 12000, 48000);
-    expect(writer.append(samples.data()+12000, 36000), "second segment");
-    expect(writer.close(), "finalize"); checkWave(source, 48000, 48000);
+    WaveWriter writer; expect(writer.open(source, 48000, 2, 3), "open stereo WAV with Unicode path");
+    std::vector<float> samples(48000 * 2);
+    for (size_t frame = 0; frame < 48000; ++frame) {
+        const auto tone = float(std::sin(frame * 440. * 6.283185307179586 / 48000.) * .5);
+        samples[frame * 2] = tone;
+        samples[frame * 2 + 1] = -tone;
+    }
+    std::vector<BYTE> pcm;
+    packPcm24(pcm, reinterpret_cast<const BYTE*>(samples.data()), 12000 * 2, 32, true, false);
+    expect(writer.append(pcm), "first segment");
+    expect(writer.checkpoint(), "checkpoint"); checkWave(source, 12000, 48000, 2, 3);
+    packPcm24(pcm, reinterpret_cast<const BYTE*>(samples.data() + 12000 * 2), 36000 * 2, 32, true, false);
+    expect(writer.append(pcm), "second segment");
+    expect(writer.close(), "finalize"); checkWave(source, 48000, 48000, 2, 3);
     std::wstring error;
     auto wav = root / L"Экспорт с пробелами.wav";
     const auto existingPartial = root / L"Экспорт с пробелами.part.wav";
     std::ofstream(existingPartial, std::ios::binary).put('x');
-    expect(exportAudio(source, wav, L"wav", {}, error), "WAV export"); checkWave(wav, 48000, 48000);
+    expect(exportAudio(source, wav, L"wav", {}, error), "WAV export"); checkWave(wav, 48000, 48000, 2, 3);
     expect(std::ifstream(existingPartial, std::ios::binary).get() == 'x', "named export preserves unrelated partial files");
     expect(!exportAudio(source, wav, L"wav", {}, error), "never overwrite an existing recording");
     expect(!exportAudio(source, root / L"no-encoder.mp3", L"mp3", {}, error), "report missing encoder");

@@ -26,32 +26,85 @@ template<class T> struct ComPtr {
     ~ComPtr() { if (p) p->Release(); }
     T* operator->() const { return p; }
 };
+
+bool captureLayout(const WAVEFORMATEX& format, bool& floating, DWORD& channelMask) {
+    floating = format.wFormatTag == WAVE_FORMAT_IEEE_FLOAT;
+    bool pcm = format.wFormatTag == WAVE_FORMAT_PCM;
+    channelMask = 0;
+    if (format.wFormatTag == WAVE_FORMAT_EXTENSIBLE && format.cbSize >= 22) {
+        const auto& extended = reinterpret_cast<const WAVEFORMATEXTENSIBLE&>(format);
+        floating = IsEqualGUID(extended.SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
+        pcm = IsEqualGUID(extended.SubFormat, KSDATAFORMAT_SUBTYPE_PCM);
+        channelMask = extended.dwChannelMask;
+    }
+    const unsigned bits = format.wBitsPerSample;
+    const bool supported = floating ? bits == 32 : pcm && (bits == 8 || bits == 16 || bits == 24 || bits == 32);
+    return supported && format.nSamplesPerSec && format.nChannels &&
+        format.nBlockAlign == format.nChannels * (bits / 8u);
 }
 
-bool WaveWriter::open(const std::filesystem::path& path, unsigned rate) {
+HRESULT openCapture(IMMDevice* device, bool raw, ComPtr<IAudioClient>& client, WAVEFORMATEX*& format) {
+    HRESULT hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&client.p));
+    if (FAILED(hr)) return hr;
+    if (raw) {
+        ComPtr<IAudioClient2> client2;
+        hr = client->QueryInterface(IID_PPV_ARGS(&client2.p));
+        if (FAILED(hr)) return hr;
+        AudioClientProperties properties{sizeof(properties), FALSE, AudioCategory_Other, AUDCLNT_STREAMOPTIONS_RAW};
+        hr = client2->SetClientProperties(&properties);
+        if (FAILED(hr)) return hr;
+    }
+    hr = client->GetMixFormat(&format);
+    if (FAILED(hr)) return hr;
+    bool floating = false;
+    DWORD mask = 0;
+    if (!captureLayout(*format, floating, mask)) return AUDCLNT_E_UNSUPPORTED_FORMAT;
+    return client->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 1000000, 0, format, nullptr);
+}
+}
+
+bool WaveWriter::open(const std::filesystem::path& path, unsigned rate, unsigned channels, uint32_t channelMask) {
     close(); frames_ = 0;
+    if (!channels || channels > UINT16_MAX / 3 || !rate || rate > UINT32_MAX / (channels * 3u)) return false;
+    frameBytes_ = channels * 3;
+    const bool extensible = channels > 2 || channelMask != 0;
+    headerBytes_ = extensible ? 68 : 44;
     stream_.open(path, std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
     if (!stream_) return false;
-    stream_.write("RIFF", 4); writeLE<uint32_t>(stream_, 36);
-    stream_.write("WAVEfmt ", 8); writeLE<uint32_t>(stream_, 16);
-    writeLE<uint16_t>(stream_, 1); writeLE<uint16_t>(stream_, 1);
-    writeLE<uint32_t>(stream_, rate); writeLE<uint32_t>(stream_, rate * 2);
-    writeLE<uint16_t>(stream_, 2); writeLE<uint16_t>(stream_, 16);
+    stream_.write("RIFF", 4); writeLE<uint32_t>(stream_, headerBytes_ - 8);
+    stream_.write("WAVEfmt ", 8); writeLE<uint32_t>(stream_, extensible ? 40 : 16);
+    writeLE<uint16_t>(stream_, extensible ? WAVE_FORMAT_EXTENSIBLE : WAVE_FORMAT_PCM);
+    writeLE<uint16_t>(stream_, uint16_t(channels));
+    writeLE<uint32_t>(stream_, rate); writeLE<uint32_t>(stream_, rate * frameBytes_);
+    writeLE<uint16_t>(stream_, uint16_t(frameBytes_)); writeLE<uint16_t>(stream_, 24);
+    if (extensible) {
+        writeLE<uint16_t>(stream_, 22);
+        writeLE<uint16_t>(stream_, 24);
+        writeLE<uint32_t>(stream_, channelMask);
+        stream_.write(reinterpret_cast<const char*>(&KSDATAFORMAT_SUBTYPE_PCM), sizeof(GUID));
+    }
     stream_.write("data", 4); writeLE<uint32_t>(stream_, 0);
     return bool(stream_);
 }
-bool WaveWriter::append(const int16_t* samples, size_t count) {
-    if (!stream_ || (frames_ + count) * 2 > 0xFFFFFFFFull - 36) return false;
-    stream_.write(reinterpret_cast<const char*>(samples), std::streamsize(count * 2));
+bool WaveWriter::append(const std::vector<BYTE>& pcm24) {
+    if (!stream_.is_open() || !stream_ || pcm24.size() % frameBytes_ != 0) return false;
+    const uint64_t bytes = frames_ * frameBytes_ + pcm24.size();
+    if (bytes + (bytes & 1) + headerBytes_ - 8 > UINT32_MAX) return false;
+    if (pcm24.empty()) return true;
+    stream_.write(reinterpret_cast<const char*>(pcm24.data()), std::streamsize(pcm24.size()));
     if (!stream_) return false;
-    frames_ += count;
+    frames_ += pcm24.size() / frameBytes_;
     return true;
 }
 bool WaveWriter::checkpoint() {
     if (!stream_.is_open() || !stream_) return false;
-    stream_.seekp(4); writeLE<uint32_t>(stream_, uint32_t(36 + frames_ * 2));
-    stream_.seekp(40); writeLE<uint32_t>(stream_, uint32_t(frames_ * 2));
-    stream_.seekp(0, std::ios::end); stream_.flush();
+    const uint32_t bytes = uint32_t(frames_ * frameBytes_);
+    const auto dataEnd = std::streamoff(headerBytes_) + bytes;
+    stream_.seekp(4); writeLE<uint32_t>(stream_, uint32_t(dataEnd - 8 + (bytes & 1)));
+    stream_.seekp(headerBytes_ - 4); writeLE<uint32_t>(stream_, bytes);
+    stream_.seekp(dataEnd);
+    if (bytes & 1) { stream_.put('\0'); stream_.seekp(dataEnd); }
+    stream_.flush();
     return bool(stream_);
 }
 bool WaveWriter::close() {
@@ -59,31 +112,38 @@ bool WaveWriter::close() {
     const bool ok = checkpoint(); stream_.close(); return ok;
 }
 
-std::vector<int16_t> toMono(const BYTE* data, size_t frames,
-    unsigned channels, unsigned bits, bool floatingPoint, bool silent) {
-    std::vector<int16_t> result(frames, 0);
-    if (silent || !channels) return result;
-    for (size_t i = 0; i < frames; ++i) {
-        double sum = 0;
-        for (unsigned channel = 0; channel < channels; ++channel) {
-            const BYTE* p = data + (i * channels + channel) * (bits / 8);
-            double sample = 0;
-            if (floatingPoint && bits == 32) {
-                float f; std::memcpy(&f, p, 4); sample = std::isfinite(f) ? f : 0;
-            } else if (bits == 16) {
-                int16_t n; std::memcpy(&n, p, 2); sample = n / 32768.;
-            } else if (bits == 24) {
-                int32_t n = p[0] | (int32_t(p[1]) << 8) | (int32_t(p[2]) << 16);
-                if (n & 0x800000) n -= 0x1000000;
-                sample = n / 8388608.;
-            } else if (bits == 32) {
-                int32_t n; std::memcpy(&n, p, 4); sample = n / 2147483648.;
-            } else if (bits == 8) sample = (int(p[0]) - 128) / 128.;
-            sum += sample;
-        }
-        result[i] = int16_t(std::clamp(sum / channels, -1., 1.) * 32767.);
+float packPcm24(std::vector<BYTE>& output, const BYTE* data, size_t samples,
+    unsigned bits, bool floatingPoint, bool silent) {
+    output.resize(samples * 3);
+    if (silent) {
+        std::fill(output.begin(), output.end(), 0);
+        return 0.f;
     }
-    return result;
+    int32_t peak = 0;
+    for (size_t i = 0; i < samples; ++i) {
+        const BYTE* input = data + i * (bits / 8);
+        int32_t sample = 0;
+        if (floatingPoint) {
+            float value; std::memcpy(&value, input, sizeof(value));
+            if (std::isfinite(value)) {
+                sample = int32_t(std::clamp(std::lround(std::clamp(value, -1.f, 1.f) * 8388608.), -8388608L, 8388607L));
+            }
+        } else if (bits == 8) {
+            sample = (int32_t(input[0]) - 128) * 65536;
+        } else {
+            // PCM is little-endian. Keep its top three bytes, or pad a 16-bit sample on the right.
+            const auto* pcm = input + (bits == 32 ? 1 : 0);
+            const int32_t packed = bits == 16 ? (int32_t(pcm[0]) << 8) | (int32_t(pcm[1]) << 16) :
+                pcm[0] | (int32_t(pcm[1]) << 8) | (int32_t(pcm[2]) << 16);
+            sample = packed >= 0x800000 ? packed - 0x1000000 : packed;
+        }
+        peak = std::max(peak, std::abs(sample));
+        const auto packed = uint32_t(sample);
+        output[i * 3] = BYTE(packed);
+        output[i * 3 + 1] = BYTE(packed >> 8);
+        output[i * 3 + 2] = BYTE(packed >> 16);
+    }
+    return peak / 8388608.f;
 }
 
 Recorder::~Recorder() { finish(); DeleteCriticalSection(&errorLock_); }
@@ -133,30 +193,29 @@ void Recorder::run(std::filesystem::path path, HWND notify, void* startupPtr) {
             if (!check(hr, L"Аудиоустройства недоступны.")) break;
             if (!check(enumerator->GetDefaultAudioEndpoint(eCapture, eConsole, &device.p),
                 L"Микрофон не найден. Подключите микрофон и проверьте настройки Windows.")) break;
-            if (!check(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
-                reinterpret_cast<void**>(&client.p)), L"Не удалось открыть микрофон.")) break;
-            if (!check(client->GetMixFormat(&format), L"Не удалось определить формат микрофона.")) break;
-            bool floating = format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT;
-            bool pcm = format->wFormatTag == WAVE_FORMAT_PCM;
-            if (format->wFormatTag == WAVE_FORMAT_EXTENSIBLE && format->cbSize >= 22) {
-                auto* ext = reinterpret_cast<WAVEFORMATEXTENSIBLE*>(format);
-                floating = IsEqualGUID(ext->SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
-                pcm = IsEqualGUID(ext->SubFormat, KSDATAFORMAT_SUBTYPE_PCM);
+            hr = openCapture(device.p, true, client, format);
+            if (FAILED(hr)) {
+                if (client.p) client.p->Release();
+                client.p = nullptr;
+                CoTaskMemFree(format);
+                format = nullptr;
+                hr = openCapture(device.p, false, client, format);
             }
-            if ((!floating && !pcm) || (floating && format->wBitsPerSample != 32) ||
-                (pcm && format->wBitsPerSample != 8 && format->wBitsPerSample != 16 &&
-                format->wBitsPerSample != 24 && format->wBitsPerSample != 32)) {
-                failure = L"Микрофон использует неподдерживаемый формат звука."; break;
-            }
-            if (!check(client->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 1000000, 0, format, nullptr),
+            if (!check(hr,
                 L"Не удалось начать запись. Проверьте разрешение на микрофон в Windows.")) break;
+            bool floating = false;
+            DWORD channelMask = 0;
+            captureLayout(*format, floating, channelMask);
             if (!check(client->GetService(__uuidof(IAudioCaptureClient), reinterpret_cast<void**>(&capture.p)),
                 L"Не удалось получить поток микрофона.")) break;
             rate_ = format->nSamplesPerSec;
-            if (!writer.open(path, rate_)) { failure = L"Не удалось создать временный WAV. Проверьте свободное место."; break; }
+            if (!writer.open(path, rate_, format->nChannels, channelMask)) {
+                failure = L"Не удалось создать временный WAV. Проверьте свободное место."; break;
+            }
             if (!check(client->Start(), L"Микрофон не запустился.")) break;
             startup->ready.set_value(L""); announced = true;
             ULONGLONG checkpoint = GetTickCount64();
+            std::vector<BYTE> pcm24;
             while (!stop_) {
                 UINT32 packet = 0;
                 if (!check(capture->GetNextPacketSize(&packet), L"Микрофон отключён или недоступен.")) break;
@@ -164,12 +223,9 @@ void Recorder::run(std::filesystem::path path, HWND notify, void* startupPtr) {
                     BYTE* data = nullptr; UINT32 frames = 0; DWORD flags = 0;
                     if (!check(capture->GetBuffer(&data, &frames, &flags, nullptr, nullptr), L"Ошибка чтения микрофона.")) break;
                     if (recording_) {
-                        auto mono = toMono(data, frames, format->nChannels, format->wBitsPerSample,
+                        peak_ = packPcm24(pcm24, data, size_t(frames) * format->nChannels, format->wBitsPerSample,
                             floating, (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0);
-                        float peak = 0;
-                        for (auto sample : mono) peak = std::max(peak, std::abs(int(sample)) / 32768.f);
-                        peak_ = peak;
-                        if (!writer.append(mono.data(), mono.size())) failure = L"Не удалось записать WAV: диск заполнен или достигнут предел 4 ГБ. Запись остановлена.";
+                        if (!writer.append(pcm24)) failure = L"Не удалось записать WAV: диск заполнен или достигнут предел 4 ГБ. Запись остановлена.";
                         frames_ = writer.frames();
                     }
                     const HRESULT released = capture->ReleaseBuffer(frames);

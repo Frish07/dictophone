@@ -353,7 +353,7 @@ void menu(const POINT* anchor = nullptr) {
     if (selected == Pin) SendMessageW(window, WM_COMMAND, Pin, 0);
     if (selected == 207) {
         modal = true;
-        MessageBoxW(window, L"Dictophone 1.3.0\n\nДиктофон: запись → пауза → продолжить / сохранить.\nНа паузе главная кнопка удаляет запись после подтверждения.\nРация: держите пробел, чтобы записывать.\nПри сохранении можно выбрать папку и ввести имя записи.\n\nCtrl+S — сохранить. Ctrl+O — папка записей.\nCtrl+M — уменьшенное окно.\nВ уменьшенном окне: ПКМ — меню, таймер — перетащить.\nДвойной щелчок по таймеру — обычное окно.\nНастройки и черновики: %LOCALAPPDATA%\\Dictophone\n\nГлобальный пробел включается отдельно в меню.\nВ этом режиме он перехватывается в других приложениях.",
+        MessageBoxW(window, L"Dictophone 1.4.0\n\nДиктофон: запись → пауза → продолжить / сохранить.\nНа паузе главная кнопка удаляет запись после подтверждения.\nРация: держите пробел, чтобы записывать.\nПри сохранении можно выбрать папку и ввести имя записи.\n\nCtrl+S — сохранить. Ctrl+O — папка записей.\nCtrl+M — уменьшенное окно.\nВ уменьшенном окне: ПКМ — меню, таймер — перетащить.\nДвойной щелчок по таймеру — обычное окно.\nНастройки и черновики: %LOCALAPPDATA%\\Dictophone\n\nГлобальный пробел включается отдельно в меню.\nВ этом режиме он перехватывается в других приложениях.",
             L"О приложении", MB_OK | MB_ICONINFORMATION); modal = false;
     }
     saveSettings(); update();
@@ -382,7 +382,13 @@ void paint(HDC target) {
     text(dc, L"DICTOPHONE", rect(20, 12, 170, 28), titleFont, Text);
     text(dc, walkie ? L"РАЦИЯ" : L"ДИКТОФОН", rect(22, 49, 165, 20), smallFont, Accent);
     std::wstring format = Formats[formatIndex]; std::transform(format.begin(), format.end(), format.begin(), ::towupper);
-    text(dc, format + L"  /  MONO", rect(218, 49, 120, 20), smallFont, Muted, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    if (session) {
+        const unsigned rate = recorder.sampleRate();
+        format += L"  /  " + std::to_wstring(rate / 1000);
+        if (rate % 1000) format += L"," + std::to_wstring(rate % 1000 / 100);
+        format += L" кГц";
+    }
+    text(dc, format, rect(218, 49, 120, 20), smallFont, Muted, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     text(dc, time, rect(20, 73, 320, 56), timerFont, Text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     int i = 0;
     for (float level : levels) {
