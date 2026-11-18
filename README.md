@@ -1,74 +1,78 @@
 # Dictophone
 
-Маленький диктофон для **Windows 10/11 x64**, написанный на **C++17**. Русский интерфейс, окно 360 × 300, без установки и без отправки аудио в интернет.
+**English** | [Русский](https://github.com/Frish07/dictophone/blob/main/README.ru.md)
 
-Текущая версия: **1.4.0**. Готовый комплект с FFmpeg доступен в [релизах](https://github.com/Frish07/dictophone/releases). Распакуйте архив целиком и запустите `Dictophone.exe`.
+A compact audio recorder for **Windows 10/11 x64**, written in **C++17**. It has a Russian-language interface and a 360 × 300 window. Run it without installation and record audio locally.
 
-GitHub Actions проверяет запуск приложения из опубликованного ZIP и работу всех пяти форматов с включённым FFmpeg без установки пакетов. [Проверка переносимого релиза](https://github.com/Frish07/dictophone/actions/workflows/portable-release.yml)
+Current version: **1.4.0**. A portable package with FFmpeg is available in [Releases](https://github.com/Frish07/dictophone/releases). Extract the entire archive and run `Dictophone.exe`.
 
-## Запуск
+GitHub Actions checks that the app starts from the published ZIP and that all five audio formats work with the bundled FFmpeg without installing packages. [Portable release checks](https://github.com/Frish07/dictophone/actions/workflows/portable-release.yml)
 
-Если запускаете приложение из исходников, откройте **[`app/Dictophone.exe`](app/Dictophone.exe)**. Для записи в WAV ничего дополнительно не нужно.
+## Getting started
 
-Для **MP3, OGG, FLAC и M4A** один раз выполните из корня проекта:
+If you are running the app from the repository, open **[`app/Dictophone.exe`](app/Dictophone.exe)**. WAV recording works out of the box.
+
+To enable **MP3, OGG, FLAC, and M4A**, run this command once from the project root:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-ffmpeg.ps1
 ```
 
-Скрипт скачает Windows-сборку FFmpeg от Gyan (она указана на [официальной странице FFmpeg](https://ffmpeg.org/download.html)), проверит SHA256 и положит кодировщик рядом с приложением. Сам диктофон не скачивает ничего и не обращается к сети. `ffmpeg.exe` не включён в Git из-за размера; источник и лицензия сохраняются рядом со скачанным файлом.
+The script downloads a Windows build of FFmpeg from Gyan, checks its SHA256, and places the encoder next to the app. Gyan is listed on the [official FFmpeg download page](https://ffmpeg.org/download.html). The app itself works offline. The downloaded encoder is accompanied by its source information and license. Its size keeps `ffmpeg.exe` out of the Git repository.
 
-## Управление
+## Controls
 
-- **▶ Запись** начинает запись и превращается в **■ Стоп**. Стоп завершает и сохраняет файл.
-- **Ⅱ** ставит запись на паузу; **▶** на этой кнопке продолжает тот же файл.
-- На паузе главная кнопка становится **«Удалить»** (в уменьшенном окне — корзина). Она открывает окно **«Да / Нет»**: «Да» удаляет текущий несохранённый черновик и сбрасывает таймер; «Нет» оставляет запись на паузе. После продолжения записи главная кнопка снова становится «Стоп».
-- **Сохранить** или **Ctrl+S** открывает окно «Сохранить запись как» в выбранной папке. Введите имя или выберите другую папку. Расширение выбранного формата добавляется автоматически. При отмене запись остаётся на паузе.
-- **◇ / ◆** закрепляет окно поверх остальных приложений. Подсказки появляются при наведении.
-- **⋯** открывает выбор режима, формата и папки. По умолчанию записи сохраняются в `Документы\Dictophone`.
-- **Ctrl+O** открывает папку записей. Окно можно перетащить за заголовок, свернуть и закрыть.
+The app's button and menu labels are in Russian.
 
-### Уменьшенное окно
+- **▶ Запись** (Record) starts recording and becomes **■ Стоп** (Stop). Stop finishes the recording and opens the save dialog.
+- **Ⅱ** pauses recording. **▶** on the same button resumes the current recording.
+- While paused, the main button becomes **Удалить** (Delete), shown as a trash icon in the compact window. It opens a **Да / Нет** (Yes / No) confirmation. Yes deletes the current unsaved draft and resets the timer. No keeps the recording paused. Resuming restores the Stop button.
+- **Сохранить** (Save) or **Ctrl+S** opens the Save As dialog in the selected folder. Enter a name or choose another folder. The selected audio format's extension is added automatically. Canceling keeps the recording paused.
+- **◇ / ◆** toggles always on top. Hover over buttons to see tooltips.
+- **⋯** opens the mode, format, and output folder menu. The default output folder is `Documents\Dictophone`.
+- **Ctrl+O** opens the output folder. Drag the window by its header, or use its minimize and close buttons.
 
-**⋯ → Уменьшенное окно** или **Ctrl+M** переключает панель в размер **306 × 64**: только три кнопки со значками (запись/стоп, пауза/продолжение, сохранение) и таймер справа. Надписей на кнопках и заголовка нет; подсказки при наведении и названия для экранных дикторов сохраняются. Оба режима записи работают как в обычном окне, а закрепление поверх других приложений сохраняется.
+### Compact window
 
-Перетаскивайте панель за таймер. **Правая кнопка мыши** на панели открывает то же меню, включая переключатель размера и закрепление поверх окон. Вернуться к обычному виду можно также сочетанием **Ctrl+M** или двойным щелчком по таймеру. Выбранный размер запоминается после выхода.
+Select **⋯ → Уменьшенное окно** (Compact window) or press **Ctrl+M** to switch to a **306 × 64** panel with three icon buttons for recording/stopping, pausing/resuming, and saving, plus a timer on the right. Tooltips and screen reader labels remain available. Both recording modes and always-on-top behavior work in the compact window.
 
-### Режим рации
+Drag the panel by its timer. **Right-click** the panel to open the same menu, including the size and always-on-top options. Return to the full window with **Ctrl+M** or a double-click on the timer. The selected window size is remembered after closing the app.
 
-Выберите **⋯ → Рация**. **Удерживайте пробел**, чтобы записывать; отпустите, чтобы поставить запись на паузу. Повторные нажатия дописывают тот же файл **без тишины между нажатиями**. Можно также удерживать кнопку **● Держать** мышью. Для завершения нажмите **Сохранить**.
+### Push-to-talk mode
 
-После отпускания пробела главная кнопка позволяет удалить черновик с подтверждением. Чтобы продолжить запись на паузе в режиме рации, снова удерживайте **пробел**. При начале новой записи кнопка «● Держать» также доступна для мыши.
+Select **⋯ → Рация** (Push-to-talk). **Hold Space** to record and release it to pause. Repeated presses append to the same file, omitting the gaps between presses. You can also hold the **● Держать** (Hold) button with the mouse when starting a new recording. Press **Сохранить** (Save) to finish.
 
-Изначально пробел действует в окне диктофона. **⋯ → Пробел в других приложениях** включает глобальное удержание: окно может оставаться поверх игры или другой программы без фокуса. Пока эта настройка включена в режиме рации, пробел перехватывается диктофоном и не передаётся другим приложениям. Чтобы снова печатать пробелы, отключите настройку или переключитесь в обычный режим. На защищённых рабочих столах и в некоторых приложениях с повышенными правами глобальное управление может быть недоступно.
+After releasing Space, the main button lets you delete the draft with confirmation. Hold **Space** again to resume a paused push-to-talk recording. The **● Держать** button is also available for the mouse at the start of a new recording.
 
-Режим и формат нельзя менять во время незавершённой записи. Если экспорт не удался, можно выбрать другой формат (например, WAV) и повторить сохранение. Папку можно изменить перед сохранением.
+By default, Space works while the recorder has focus. **⋯ → Пробел в других приложениях** (Space in other apps) enables global push-to-talk, so you can keep the recorder above a game or another app while working there. In push-to-talk mode with this option enabled, the recorder captures Space keystrokes. Turn off the option or switch to regular recording mode to type spaces in other apps. Global controls may be unavailable on secure desktops and in some elevated applications.
 
-## Аудио и восстановление
+The mode and format are locked during an unfinished recording. If export fails, you can choose another format, such as WAV, and retry. You can change the output folder before saving.
 
-Диктофон использует микрофон по умолчанию Windows через WASAPI. Если драйвер поддерживает RAW, диктофон запрашивает захват с отключением голосовых эффектов Windows. Иначе используется стандартный захват. WAV и FLAC сохраняют каналы и частоту захвата в 24-битном PCM. Для Bluetooth-гарнитуры качество зависит от того, какой режим входа предоставляет Windows.
+## Audio and recovery
 
-Запись пишется на диск, поэтому длительность не ограничена оперативной памятью. WAV ограничен 4 ГБ (примерно 4 часа при 48 кГц и двух каналах). При достижении лимита приложение останавливает запись и позволяет сохранить её. Индикатор уровня показывает сигнал самого громкого канала. Таймер учитывает только записанное аудио.
+The recorder uses the default Windows microphone through WASAPI. When the driver supports RAW, it requests capture with Windows voice effects disabled. Otherwise, it uses standard capture. WAV and FLAC preserve the capture channels and sample rate in 24-bit PCM. Bluetooth headset quality depends on the input mode Windows provides.
 
-Настройки: `%LOCALAPPDATA%\Dictophone\settings.ini`. Временные WAV: `%LOCALAPPDATA%\Dictophone\Recovery`; их можно открыть через меню. Заголовок WAV обновляется каждую секунду. При ошибке экспорта или выходе без сохранения временный WAV остаётся доступен. После аварийного завершения последний неполный фрагмент может потребовать восстановления; автоматического восстановления приложение не выполняет. После успешного экспорта временный WAV удаляется. Уже существующие файлы не перезаписываются.
+Audio is written to disk as it is recorded. WAV has a 4 GB limit, approximately four hours at 48 kHz with two channels. At the limit, the app stops recording and lets you save it. The level meter shows the loudest channel, and the timer counts recorded audio only.
 
-Если микрофон не открывается, проверьте устройство ввода по умолчанию и **Параметры Windows → Конфиденциальность и безопасность → Микрофон → доступ для классических приложений**.
+Settings are stored in `%LOCALAPPDATA%\Dictophone\settings.ini`. Temporary WAV files are in `%LOCALAPPDATA%\Dictophone\Recovery`, accessible from the menu. The WAV header is updated every second. A temporary WAV remains available after an export error or closing without saving. After a crash, the final incomplete segment may need manual recovery. Successful export removes the temporary WAV. Existing output files are protected from overwriting.
 
-## Сборка
+If the microphone cannot be opened, check the default input device and **Windows Settings → Privacy & security → Microphone → Let desktop apps access your microphone**.
 
-Вариант 1: [MSYS2](https://www.msys2.org/), пакет `mingw-w64-ucrt-x86_64-gcc`. Скрипт также ищет компилятор в стандартных каталогах MSYS2:
+## Building
+
+Option 1 uses [MSYS2](https://www.msys2.org/) with the `mingw-w64-ucrt-x86_64-gcc` package. The build script also looks for the compiler in the standard MSYS2 directories.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -WithFfmpeg -Test
 ```
 
-Готовый файл: `app/Dictophone.exe`; библиотек GCC рядом не требуется. Проверка с настоящим микрофоном, которая создаёт локальные тестовые записи:
+The output is `app/Dictophone.exe`, with the GCC runtime linked into the executable. To run checks with a real microphone and create local test recordings:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Microphone
 ```
 
-Вариант 2: Visual Studio 2022 с Desktop development with C++ и CMake:
+Option 2 uses Visual Studio 2022 with the Desktop development with C++ workload and CMake.
 
 ```powershell
 cmake -S . -B build/cmake -A x64
@@ -76,8 +80,8 @@ cmake --build build/cmake --config Release
 ctest --test-dir build/cmake -C Release --output-on-failure
 ```
 
-Для сжатых форматов положите `ffmpeg.exe` рядом с полученным `Dictophone.exe`. Переносимый комплект — вся папка `app`. Тесты проверяют преобразование PCM/float, WAV-заголовки, промежуточные сохранения, Unicode-пути, запрет перезаписи, сохранность исходника при ошибках и все форматы при наличии FFmpeg. Тест микрофона запускается отдельно и не нужен для CI.
+For compressed formats, place `ffmpeg.exe` next to the resulting `Dictophone.exe`. The entire `app` folder forms the portable package. Tests cover PCM/float conversion, WAV headers, checkpoints, Unicode paths, overwrite protection, source preservation on errors, and all formats when FFmpeg is available. The microphone test is run separately from CI.
 
-## Лицензия
+## License
 
-Исходный код приложения распространяется по MIT. FFmpeg — отдельная программа со своей лицензией; сборка Gyan essentials содержит GPL-компоненты. См. `ffmpeg-license.txt`, который создаёт скрипт установки, и [информацию FFmpeg о лицензировании](https://ffmpeg.org/legal.html).
+The app's source code is distributed under the MIT license. FFmpeg has its own license, and the Gyan essentials build includes GPL components. See the `ffmpeg-license.txt` file created by the setup script and the [FFmpeg licensing information](https://ffmpeg.org/legal.html).
