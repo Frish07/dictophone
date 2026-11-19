@@ -26,6 +26,7 @@ HHOOK keyboardHook = nullptr;
 bool walkie = false, globalSpace = false, pinned = false, compact = false, session = false,
     exporting = false, held = false, mouseHolding = false, modal = false, closeAfterSave = false, finalized = false;
 int formatIndex = 0;
+const AudioEncoding* encoding = &AudioEncodings[0];
 float scale = 1.f;
 Recorder recorder;
 std::thread exportThread;
@@ -64,6 +65,7 @@ void saveSettings() {
     auto path = dataDir / L"settings.ini";
     WritePrivateProfileStringW(L"settings", L"folder", outputDir.c_str(), path.c_str());
     WritePrivateProfileStringW(L"settings", L"format", Formats[formatIndex].c_str(), path.c_str());
+    WritePrivateProfileStringW(L"settings", L"encoding", encoding->id, path.c_str());
     WritePrivateProfileStringW(L"settings", L"walkie", walkie ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"settings", L"globalSpace", globalSpace ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"settings", L"pinned", pinned ? L"1" : L"0", path.c_str());
@@ -76,6 +78,11 @@ void loadSettings() {
     outputDir = fs::path(folder).is_absolute() ? fs::path(folder) : fallback;
     wchar_t format[32]{}; GetPrivateProfileStringW(L"settings", L"format", L"wav", format, 32, path.c_str());
     for (size_t i = 0; i < Formats.size(); ++i) if (Formats[i] == format) formatIndex = int(i);
+    wchar_t encodingId[64]{};
+    GetPrivateProfileStringW(L"settings", L"encoding", L"", encodingId, 64, path.c_str());
+    encoding = findAudioEncoding(encodingId);
+    if (!encoding || Formats[formatIndex] != encoding->extension)
+        encoding = defaultAudioEncoding(Formats[formatIndex]);
     walkie = GetPrivateProfileIntW(L"settings", L"walkie", 0, path.c_str()) != 0;
     globalSpace = GetPrivateProfileIntW(L"settings", L"globalSpace", 0, path.c_str()) != 0;
     pinned = GetPrivateProfileIntW(L"settings", L"pinned", 0, path.c_str()) != 0;
@@ -116,8 +123,8 @@ bool begin() {
         if (finalized) return false;
         recorder.setRecording(true); notice.clear(); update(); return true;
     }
-    if (formatIndex && findFfmpeg().empty()) {
-        errorBox(L"Для MP3, OGG, FLAC и M4A нужен FFmpeg. Запустите scripts/setup-ffmpeg.ps1 или выберите WAV в меню ⋯.");
+    if (encoding->ffmpegOptions[0] && findFfmpeg().empty()) {
+        errorBox(L"Для выбранной кодировки нужен FFmpeg. Запустите scripts/setup-ffmpeg.ps1 или выберите PCM 24 бит (WAV) в меню ⋯ → Кодировка аудио.");
         return false;
     }
     try {
@@ -176,7 +183,7 @@ fs::path chooseSavePath(const std::wstring& extension) {
     }
 
     const auto pattern = L"*." + extension;
-    const auto label = L"Аудио (" + pattern + L")";
+    const std::wstring label = encoding->name;
     const auto suggestedName = L"Запись-" + stamp();
     const COMDLG_FILTERSPEC fileType{label.c_str(), pattern.c_str()};
     result = dialog->SetOptions(FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOREADONLYRETURN |
@@ -255,10 +262,11 @@ void saveRecording(bool exitAfterSave = false) {
     exporting = true; notice = L"Сохраняю…"; update();
     savedPath = destination;
     const auto input = draft, output = savedPath, encoder = findFfmpeg();
+    const std::wstring selectedEncoding = encoding->id;
     if (exportThread.joinable()) exportThread.join();
-    exportThread = std::thread([input, output, encoder, extension] {
+    exportThread = std::thread([input, output, encoder, extension, selectedEncoding] {
         std::wstring failure;
-        const bool ok = exportAudio(input, output, extension, encoder, failure);
+        const bool ok = exportAudio(input, output, extension, encoder, failure, selectedEncoding);
         exportError = failure;
         PostMessageW(window, ExportDone, ok, 0);
     });
@@ -315,7 +323,7 @@ void openFolder(const fs::path& path) {
 }
 void menu(const POINT* anchor = nullptr) {
     releaseSpace(); modal = true;
-    HMENU popup = CreatePopupMenu(), formats = CreatePopupMenu();
+    HMENU popup = CreatePopupMenu(), formats = CreatePopupMenu(), encodings = CreatePopupMenu();
     const UINT locked = (session || exporting) ? MF_GRAYED : 0;
     AppendMenuW(popup, MF_STRING | locked | (!walkie ? MF_CHECKED : 0), 201, L"Диктофон");
     AppendMenuW(popup, MF_STRING | locked | (walkie ? MF_CHECKED : 0), 202, L"Рация · удерживать пробел");
@@ -329,7 +337,14 @@ void menu(const POINT* anchor = nullptr) {
         auto label = Formats[i]; std::transform(label.begin(), label.end(), label.begin(), ::towupper);
         AppendMenuW(formats, MF_STRING | (int(i) == formatIndex ? MF_CHECKED : 0), 220 + i, label.c_str());
     }
-    AppendMenuW(popup, MF_POPUP | ((exporting || (session && !finalized)) ? MF_GRAYED : 0), reinterpret_cast<UINT_PTR>(formats), L"Формат аудио");
+    AppendMenuW(popup, MF_POPUP | (exporting ? MF_GRAYED : 0), reinterpret_cast<UINT_PTR>(formats), L"Формат аудио");
+    UINT checkedEncoding = 240;
+    for (size_t i = 0; i < AudioEncodings.size(); ++i) {
+        AppendMenuW(encodings, MF_STRING, 240 + i, AudioEncodings[i].name);
+        if (encoding == &AudioEncodings[i]) checkedEncoding = UINT(240 + i);
+    }
+    CheckMenuRadioItem(encodings, 240, 249, checkedEncoding, MF_BYCOMMAND);
+    AppendMenuW(popup, MF_POPUP | (exporting ? MF_GRAYED : 0), reinterpret_cast<UINT_PTR>(encodings), L"Кодировка аудио");
     AppendMenuW(popup, MF_STRING | (exporting ? MF_GRAYED : 0), 204, L"Выбрать папку сохранения…");
     AppendMenuW(popup, MF_STRING, 205, L"Открыть папку записей");
     AppendMenuW(popup, MF_STRING, 206, L"Открыть временные WAV");
@@ -345,7 +360,16 @@ void menu(const POINT* anchor = nullptr) {
     SetFocus(IsWindowEnabled(GetDlgItem(window, Main)) ? GetDlgItem(window, Main) : window);
     if (selected == 201 || selected == 202) { walkie = selected == 202; notice = L"Готов к записи"; configureHook(); }
     if (selected == 203) { globalSpace = !globalSpace; configureHook(); }
-    if (selected >= 220 && selected < 225) formatIndex = selected - 220;
+    if (selected >= 220 && selected < 225) {
+        formatIndex = selected - 220;
+        encoding = defaultAudioEncoding(Formats[formatIndex]);
+    }
+    if (selected >= 240 && selected < 240 + int(AudioEncodings.size())) {
+        encoding = &AudioEncodings[selected - 240];
+        for (size_t i = 0; i < Formats.size(); ++i) {
+            if (Formats[i] == encoding->extension) formatIndex = int(i);
+        }
+    }
     if (selected == 204) chooseFolder();
     if (selected == 205) openFolder(outputDir);
     if (selected == 206) openFolder(dataDir / L"Recovery");

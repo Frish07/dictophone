@@ -38,6 +38,20 @@ Select **⋯ → Уменьшенное окно** (Compact window) or press **C
 
 Drag the panel by its timer. **Right-click** the panel to open the same menu, including the size and always-on-top options. Return to the full window with **Ctrl+M** or a double-click on the timer. The selected window size is remembered after closing the app.
 
+### Audio encoding
+
+Open **⋯ → Кодировка аудио** (Audio encoding) and select a codec. The app automatically selects the matching file format and remembers the codec after closing. The same menu is available by right-clicking the compact window.
+
+| File format | Available encodings |
+| --- | --- |
+| WAV | PCM 16-bit, PCM 24-bit, PCM 32-bit, Float32 |
+| MP3 | MP3, 192 kbps |
+| OGG | Vorbis, Opus (160 kbps) |
+| FLAC | FLAC |
+| M4A | AAC (192 kbps), ALAC |
+
+PCM 24-bit WAV works out of the box. Other encodings use the bundled FFmpeg. Selecting a format from **⋯ → Формат аудио** restores its default encoding.
+
 ### Push-to-talk mode
 
 Select **⋯ → Рация** (Push-to-talk). **Hold Space** to record and release it to pause. Repeated presses append to the same file, omitting the gaps between presses. You can also hold the **● Держать** (Hold) button with the mouse when starting a new recording. Press **Сохранить** (Save) to finish.
@@ -46,7 +60,7 @@ After releasing Space, the main button lets you delete the draft with confirmati
 
 By default, Space works while the recorder has focus. **⋯ → Пробел в других приложениях** (Space in other apps) enables global push-to-talk, so you can keep the recorder above a game or another app while working there. In push-to-talk mode with this option enabled, the recorder captures Space keystrokes. Turn off the option or switch to regular recording mode to type spaces in other apps. Global controls may be unavailable on secure desktops and in some elevated applications.
 
-The mode and format are locked during an unfinished recording. If export fails, you can choose another format, such as WAV, and retry. You can change the output folder before saving.
+The mode is locked during an unfinished recording. You can change the format and encoding until export starts. If export fails, you can choose another encoding, such as PCM 24-bit WAV, and retry. You can change the output folder before saving.
 
 ## Audio and recovery
 

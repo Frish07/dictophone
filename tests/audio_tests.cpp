@@ -51,6 +51,34 @@ void conversions() {
     packPcm24(pcm, pcm32, 2, 32, false, false);
     expect(pcm == std::vector<BYTE>{1,0,0x80, 0xfe,0xff,0x7f}, "PCM32 keeps its high 24 bits");
 }
+void verifyEncoding(const fs::path& probe, const fs::path& file, const AudioEncoding& encoding) {
+    auto log = file; log += L".probe.txt";
+    SECURITY_ATTRIBUTES attributes{sizeof(attributes), nullptr, TRUE};
+    HANDLE output = CreateFileW(log.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &attributes, CREATE_ALWAYS, 0, nullptr);
+    HANDLE input = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes, OPEN_EXISTING, 0, nullptr);
+    expect(output != INVALID_HANDLE_VALUE && input != INVALID_HANDLE_VALUE, "create probe handles");
+    STARTUPINFOW info{}; info.cb = sizeof(info); info.dwFlags = STARTF_USESTDHANDLES;
+    info.hStdOutput = output; info.hStdError = output; info.hStdInput = input;
+    PROCESS_INFORMATION process{};
+    std::wstring command = L"\"" + probe.wstring() + L"\" -v error -select_streams a:0 "
+        L"-show_entries stream=codec_name,sample_rate,channels -of default=noprint_wrappers=1 \"" + file.wstring() + L"\"";
+    const BOOL started = CreateProcessW(probe.c_str(), command.data(), nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW, nullptr, nullptr, &info, &process);
+    CloseHandle(output); CloseHandle(input);
+    expect(started, "start bundled ffprobe");
+    CloseHandle(process.hThread);
+    const DWORD wait = WaitForSingleObject(process.hProcess, 15000);
+    if (wait != WAIT_OBJECT_0) { TerminateProcess(process.hProcess, 1); WaitForSingleObject(process.hProcess, 5000); }
+    DWORD exitCode = 1; GetExitCodeProcess(process.hProcess, &exitCode); CloseHandle(process.hProcess);
+    expect(wait == WAIT_OBJECT_0 && exitCode == 0, "probe exported audio");
+    std::ifstream in(log);
+    const std::string metadata((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::wstring wideId(encoding.id);
+    const std::string id(wideId.begin(), wideId.end());
+    expect(metadata.find("codec_name=" + id + "\n") != std::string::npos, "export uses the chosen codec");
+    expect(metadata.find("sample_rate=48000\n") != std::string::npos && metadata.find("channels=2\n") != std::string::npos,
+        "chosen codec preserves test sample rate and channels");
+}
 void writersAndExports(const fs::path& root) {
     const auto mono = root / L"odd.wav";
     WaveWriter odd;
@@ -85,6 +113,13 @@ void writersAndExports(const fs::path& root) {
     expect(std::ifstream(existingPartial, std::ios::binary).get() == 'x', "named export preserves unrelated partial files");
     expect(!exportAudio(source, wav, L"wav", {}, error), "never overwrite an existing recording");
     expect(!exportAudio(source, root / L"no-encoder.mp3", L"mp3", {}, error), "report missing encoder");
+    expect(!exportAudio(source, root / L"mismatch.wav", L"wav", {}, error, L"opus"), "reject incompatible codec and container");
+    expect(!fs::exists(root / L"mismatch.wav"), "codec mismatch creates no output");
+    expect(!exportAudio(source, root / L"unknown.wav", L"wav", {}, error, L"unknown"), "reject invalid codec id");
+    expect(findAudioEncoding(L"unknown") == nullptr && defaultAudioEncoding(L"unknown") == nullptr, "invalid settings have no codec");
+    expect(std::wstring(defaultAudioEncoding(L"wav")->id) == L"pcm_s24le" &&
+        std::wstring(defaultAudioEncoding(L"ogg")->id) == L"vorbis" &&
+        std::wstring(defaultAudioEncoding(L"m4a")->id) == L"aac", "old settings retain their codecs");
     expect(fs::exists(source), "keep source on encoder failure");
     const fs::path encoder = fs::absolute(L"app/ffmpeg.exe");
     if (fs::exists(encoder)) {
@@ -93,6 +128,14 @@ void writersAndExports(const fs::path& root) {
             expect(exportAudio(source, destination, ext, encoder, error), "compressed export");
             expect(fs::file_size(destination) > 100, "encoded audio is nonempty");
             std::wcout << L"PASS: export " << ext << L"\n";
+        }
+        const auto probe = encoder.parent_path() / L"ffprobe.exe";
+        expect(fs::exists(probe), "bundled ffprobe is available for codec verification");
+        for (const auto& encoding : AudioEncodings) {
+            const auto destination = root / (std::wstring(L"Кодировка ") + encoding.id + L"." + encoding.extension);
+            expect(exportAudio(source, destination, encoding.extension, encoder, error, encoding.id), "export selected codec");
+            verifyEncoding(probe, destination, encoding);
+            std::wcout << L"PASS: selected codec " << encoding.id << L"\n";
         }
     } else std::cout << "SKIP: compressed exports (run scripts/setup-ffmpeg.ps1)\n";
     Recorder recorder;

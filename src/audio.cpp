@@ -260,6 +260,18 @@ std::filesystem::path findFfmpeg() {
     // Use an explicit colocated encoder; an unrelated PATH executable may be incompatible.
     return {};
 }
+const AudioEncoding* findAudioEncoding(const std::wstring& id) {
+    for (const auto& encoding : AudioEncodings) {
+        if (id == encoding.id) return &encoding;
+    }
+    return nullptr;
+}
+const AudioEncoding* defaultAudioEncoding(const std::wstring& extension) {
+    for (const auto& encoding : AudioEncodings) {
+        if (extension == encoding.extension) return &encoding;
+    }
+    return nullptr;
+}
 bool discardAudio(Recorder& recorder, const std::filesystem::path& draft, std::wstring& error) {
     recorder.finish();
     std::error_code ec;
@@ -276,7 +288,13 @@ bool discardAudio(Recorder& recorder, const std::filesystem::path& draft, std::w
     recorder.reset(); error.clear(); return true;
 }
 bool exportAudio(const std::filesystem::path& source, const std::filesystem::path& destination,
-    const std::wstring& extension, const std::filesystem::path& ffmpeg, std::wstring& error) {
+    const std::wstring& extension, const std::filesystem::path& ffmpeg, std::wstring& error,
+    const std::wstring& encodingId) {
+    const auto* encoding = encodingId.empty() ? defaultAudioEncoding(extension) : findAudioEncoding(encodingId);
+    if (!encoding || extension != encoding->extension) {
+        error = L"Выбранная кодировка не подходит к формату файла.";
+        return false;
+    }
     try {
         std::filesystem::create_directories(destination.parent_path());
         if (std::filesystem::exists(destination)) { error = L"Файл уже существует. Выберите другое имя."; return false; }
@@ -287,20 +305,17 @@ bool exportAudio(const std::filesystem::path& source, const std::filesystem::pat
             return false;
         }
         const auto partial = destination.parent_path() / (std::wstring(temporaryName) + L".part." + extension);
-        if (extension == L"wav") {
+        if (!encoding->ffmpegOptions[0]) {
             if (!CopyFileW(source.c_str(), partial.c_str(), TRUE)) {
                 error = L"Не удалось скопировать WAV. Проверьте папку и свободное место."; return false;
             }
         } else {
-            if (ffmpeg.empty()) { error = L"Для этого формата нужен ffmpeg.exe рядом с Dictophone.exe. Запустите scripts/setup-ffmpeg.ps1. Запись сохранена во временной папке; можно выбрать WAV и повторить сохранение."; return false; }
-            std::wstring codec;
-            if (extension == L"mp3") codec = L"-c:a libmp3lame -b:a 192k";
-            else if (extension == L"ogg") codec = L"-c:a libvorbis -q:a 5";
-            else if (extension == L"flac") codec = L"-c:a flac";
-            else if (extension == L"m4a") codec = L"-c:a aac -b:a 192k";
-            else { error = L"Неизвестный формат."; return false; }
+            if (ffmpeg.empty()) {
+                error = L"Для этой кодировки нужен ffmpeg.exe рядом с Dictophone.exe. Запустите scripts/setup-ffmpeg.ps1 или выберите PCM 24 бит (WAV). Временная запись сохранена.";
+                return false;
+            }
             std::wstring command = L"\"" + ffmpeg.wstring() + L"\" -hide_banner -loglevel error -nostdin -n -i \"" +
-                source.wstring() + L"\" -vn " + codec + L" \"" + partial.wstring() + L"\"";
+                source.wstring() + L"\" -vn " + encoding->ffmpegOptions + L" \"" + partial.wstring() + L"\"";
             STARTUPINFOW info{}; info.cb = sizeof(info); PROCESS_INFORMATION process{};
             if (!CreateProcessW(ffmpeg.c_str(), command.data(), nullptr, nullptr, FALSE,
                 CREATE_NO_WINDOW, nullptr, nullptr, &info, &process)) {
